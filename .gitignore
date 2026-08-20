@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment and secrets
+.env
+.env.local
+*.pem
+
+# Application data
+data/app.db
+data/app.db-journal
+data/recordings/*
+data/transcripts/*
+data/exports/*
+!data/recordings/.gitkeep
+!data/transcripts/.gitkeep
+!data/exports/.gitkeep
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+
+# Whisper / ML caches (local)
+*.pt
+*.bin
+.cache/
+
+# Mobile (Flutter)
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.pub-cache/
+mobile/.pub/
+mobile/build/
+mobile/.idea/
+mobile/*.iml
+
+# Web (Angular)
+web/node_modules/
+web/dist/
+web/.angular/
+npm-debug.log*
+

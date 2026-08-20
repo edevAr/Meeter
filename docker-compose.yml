@@ -1,0 +1,39 @@
+services:
+  api:
+    build: .
+    container_name: ai-call-recorder-api
+    ports:
+      - "8001:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      DATABASE_URL: "sqlite:///./data/app.db"
+      RECORDINGS_PATH: "./data/recordings"
+      TRANSCRIPTS_PATH: "./data/transcripts"
+      EXPORTS_PATH: "./data/exports"
+      TRANSCRIPTION_PROVIDER: "faster-whisper"
+      WHISPER_MODEL: "${WHISPER_MODEL:-base}"
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+    volumes:
+      - ./data:/app/data
+      - whisper-models:/root/.cache
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+volumes:
+  whisper-models:
