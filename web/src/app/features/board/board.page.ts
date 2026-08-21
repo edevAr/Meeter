@@ -99,10 +99,11 @@ type NoteMark = {
             }
           </label>
 
-          <div class="date-filter relative">
+          <div class="date-filter relative z-40" id="board-date-filter">
             <button
               type="button"
-              class="flex min-w-[148px] items-center gap-2 rounded-full border border-[#f8ecd4]/20 bg-black/40 px-2.5 py-1.5 text-left backdrop-blur-md transition hover:border-[#ffe45c]/40 hover:bg-black/55"
+              class="date-filter-btn flex min-w-[148px] items-center gap-2 rounded-full border border-[#f8ecd4]/20 bg-black/40 px-2.5 py-1.5 text-left backdrop-blur-md transition hover:border-[#ffe45c]/40 hover:bg-black/55"
+              [class.is-catching]="dateCatching()"
               (click)="toggleCalendar($event)"
               [attr.aria-expanded]="calendarOpen()"
             >
@@ -185,12 +186,14 @@ type NoteMark = {
             [attr.data-color]="colorOf(note)"
             [class.is-alarming]="isAlarming(note)"
             [class.is-spawning]="isSpawning(note)"
+            [class.is-spawn-run]="isSpawnRun(note)"
             [style.left.px]="note.pos_x"
             [style.top.px]="note.pos_y"
             [style.width.px]="noteSize(note).w"
             [style.height.px]="noteSize(note).h"
             [style.--note-rot]="note.rotation + 'deg'"
-            [style.transform]="isSpawning(note) ? null : rotationOf(note)"
+            [style.transform]="spawnTransform(note)"
+            [style.opacity]="isSpawning(note) && !isSpawnRun(note) ? 0 : null"
             [style.z-index]="zOf(note)"
             [class.is-dragging]="draggingNoteId() === note.id"
             [class.is-resizing]="noteResize()?.id === note.id"
@@ -201,8 +204,8 @@ type NoteMark = {
               class="note-drag-bar group relative -mx-1 mb-0.5 flex min-h-[22px] items-center justify-between gap-0.5 px-0.5"
               (pointerdown)="startMove($event, note)"
             >
-              <div class="relative z-20 -ml-1.5 flex items-center gap-0.5">
-                <div class="note-color-wrap relative">
+              <div class="relative z-20 -ml-1.5 flex shrink-0 items-center gap-0.5">
+                <div class="note-color-wrap relative shrink-0">
                 <button
                   type="button"
                   class="note-icon-btn is-color"
@@ -219,7 +222,7 @@ type NoteMark = {
                   </svg>
                 </button>
               </div>
-              <div class="note-remind-wrap relative z-20">
+              <div class="note-remind-wrap relative z-20 shrink-0">
                 <button
                   type="button"
                   class="note-icon-btn is-remind"
@@ -232,6 +235,20 @@ type NoteMark = {
                   <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
                     <circle cx="12" cy="13" r="7"/>
                     <path d="M12 13V9M12 13l3 2M9 4l-3 2M15 4l3 2"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="note-date-wrap relative z-20 shrink-0">
+                <button
+                  type="button"
+                  class="note-icon-btn is-date"
+                  title="Mover a otra fecha"
+                  (click)="toggleDateMover(note); $event.stopPropagation()"
+                  (pointerdown)="$event.stopPropagation()"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="4" y="5" width="16" height="15" rx="2"/>
+                    <path d="M4 10h16M8 3v4M16 3v4"/>
                   </svg>
                 </button>
               </div>
@@ -484,7 +501,8 @@ type NoteMark = {
         @if (canCreateNotes()) {
           <div class="flex flex-col items-center">
             <div
-              class="group relative h-[68px] w-[62px] cursor-grab touch-none active:cursor-grabbing"
+              class="note-pad group relative h-[68px] w-[62px] cursor-grab touch-none active:cursor-grabbing"
+              [class.is-held]="draggingPad()"
               (pointerdown)="startPadDrag($event)"
               role="button"
               tabindex="0"
@@ -493,7 +511,7 @@ type NoteMark = {
               <span class="note-pad-layer absolute left-2 top-2.5 h-[50px] w-[44px] rotate-6 rounded-[2px] shadow-lg"></span>
               <span class="note-pad-layer absolute left-1 top-1.5 h-[50px] w-[44px] -rotate-3 rounded-[2px] shadow-lg"></span>
               <span
-                class="note-pad-layer absolute left-0 top-0 h-[52px] w-[46px] rounded-[2px] shadow-dock ring-1 ring-black/10 transition group-hover:-translate-y-1"
+                class="note-pad-front note-pad-layer absolute left-0 top-0 h-[52px] w-[46px] rounded-[2px] shadow-dock ring-1 ring-black/10"
               >
                 <span class="sticky-tape mx-auto mt-2 block h-2.5 w-8 rounded-sm"></span>
               </span>
@@ -520,7 +538,7 @@ type NoteMark = {
           [style.--lift]="toss.lift + 'px'"
           [style.--spin]="toss.spin"
         >
-          <div class="trash-fly-paper sticky-paper overflow-hidden p-3">
+          <div class="trash-fly-paper sticky-paper overflow-hidden p-3" [attr.data-color]="toss.color">
             <div class="sticky-tape mx-auto h-3 w-10 rounded-sm"></div>
             <p class="mt-2 line-clamp-4 font-note text-sm leading-5 text-[#3b2a12]">{{ toss.body }}</p>
           </div>
@@ -530,6 +548,8 @@ type NoteMark = {
       @if (flyingNote(); as fly) {
         <div
           class="done-fly sticky-paper pointer-events-none fixed z-[90] overflow-hidden p-3"
+          [attr.data-color]="fly.color"
+          [class.date-fly]="fly.kind === 'date'"
           [class.in-flight]="fly.moving"
           [style.left.px]="fly.x"
           [style.top.px]="fly.y"
@@ -751,7 +771,7 @@ type NoteMark = {
           >
             <div class="mb-3 flex items-start justify-between gap-2">
               <div class="flex shrink-0 items-center gap-0.5">
-                <div class="note-color-wrap relative">
+                <div class="note-color-wrap relative shrink-0">
                   <button
                     type="button"
                     class="note-icon-btn is-color"
@@ -767,7 +787,7 @@ type NoteMark = {
                     </svg>
                   </button>
                 </div>
-                <div class="note-remind-wrap relative">
+                <div class="note-remind-wrap relative shrink-0">
                   <button
                     type="button"
                     class="note-icon-btn is-remind"
@@ -779,6 +799,19 @@ type NoteMark = {
                     <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
                       <circle cx="12" cy="13" r="7"/>
                       <path d="M12 13V9M12 13l3 2M9 4l-3 2M15 4l3 2"/>
+                    </svg>
+                  </button>
+                </div>
+                <div class="note-date-wrap relative shrink-0">
+                  <button
+                    type="button"
+                    class="note-icon-btn is-date"
+                    title="Mover a otra fecha"
+                    (click)="toggleDateMover(note, true); $event.stopPropagation()"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="4" y="5" width="16" height="15" rx="2"/>
+                      <path d="M4 10h16M8 3v4M16 3v4"/>
                     </svg>
                   </button>
                 </div>
@@ -1128,6 +1161,7 @@ type NoteMark = {
             class="note-flyout"
             [class.is-color]="panel.kind === 'color'"
             [class.is-remind]="panel.kind === 'remind'"
+            [class.is-date]="panel.kind === 'date'"
             [style.left.px]="panel.x"
             [style.top.px]="panel.y"
             (pointerdown)="$event.stopPropagation()"
@@ -1257,6 +1291,41 @@ type NoteMark = {
                 }
               </div>
             }
+            @if (panel.kind === 'date' && dateDraft(); as draft) {
+              <p class="note-flyout-kicker">Mover a otra fecha</p>
+              <div class="remind-cal-nav">
+                <button type="button" class="cal-nav" (click)="shiftMoveYear(-1)" aria-label="Año anterior">«</button>
+                <button type="button" class="cal-nav" (click)="shiftMoveMonth(-1)" aria-label="Mes anterior">‹</button>
+                <p>{{ monthNames[draft.month] }} {{ draft.year }}</p>
+                <button type="button" class="cal-nav" (click)="shiftMoveMonth(1)" aria-label="Mes siguiente">›</button>
+                <button type="button" class="cal-nav" (click)="shiftMoveYear(1)" aria-label="Año siguiente">»</button>
+              </div>
+              <div class="remind-cal-week">
+                @for (day of weekDays; track day) {
+                  <span>{{ day }}</span>
+                }
+              </div>
+              <div class="remind-cal-grid">
+                @for (cell of moveCalendarCells(); track $index) {
+                  @if (cell.day; as day) {
+                    <button
+                      type="button"
+                      class="remind-cal-day"
+                      [class.is-on]="cell.key === dayKey(note.created_at)"
+                      [class.is-today]="cell.key === todayKey()"
+                      [class.is-off]="!!cell.key && cell.key < todayKey()"
+                      [disabled]="!!cell.key && cell.key < todayKey()"
+                      (click)="cell.key && moveNoteToDate(note, cell.key)"
+                    >
+                      {{ day }}
+                    </button>
+                  } @else {
+                    <span></span>
+                  }
+                }
+              </div>
+              <p class="note-flyout-hint">Elige un día de hoy en adelante. La nota saldrá de este tablero.</p>
+            }
           </div>
         }
       }
@@ -1312,7 +1381,12 @@ type NoteMark = {
             </div>
             @if (clippyStep() === 'recording') {
               <div class="clippy-actions">
-                <button type="button" class="clippy-yes" (click)="stopCallCapture()">Listo</button>
+                <button
+                  type="button"
+                  class="clippy-yes"
+                  (pointerdown)="stopCallCapture($event)"
+                  (click)="stopCallCapture($event)"
+                >Listo</button>
               </div>
             }
           }
@@ -1397,8 +1471,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const seconds = String(total % 60).padStart(2, '0');
     return `${minutes}:${seconds}`;
   });
-  readonly draggingPad = signal(false);
-  readonly ghost = signal<{ x: number; y: number } | null>(null);
+  private padPointer: { x: number; y: number } | null = null;
   readonly activeId = signal<string | null>(null);
   readonly draggingNoteId = signal<string | null>(null);
   readonly trashOpen = signal(false);
@@ -1499,6 +1572,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   readonly drawDraft = signal<NoteMark | null>(null);
   readonly markDrag = signal<{ id: string; x: number; y: number } | null>(null);
   readonly flyingNote = signal<{
+    kind: 'done' | 'date';
     x: number;
     y: number;
     w: number;
@@ -1507,6 +1581,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     dy: number;
     rot: string;
     body: string;
+    color: string;
     moving: boolean;
   } | null>(null);
   readonly tossingNote = signal<{
@@ -1519,8 +1594,11 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     lift: number;
     spin: string;
     body: string;
+    color: string;
     moving: boolean;
   } | null>(null);
+  readonly ghost = signal<{ x: number; y: number } | null>(null);
+  readonly draggingPad = signal(false);
   readonly trashCatching = signal(false);
   readonly opensLeft = computed(() => this.trashPos().x > window.innerWidth * 0.55);
   readonly opensUp = computed(() => this.trashPos().y > window.innerHeight * 0.45);
@@ -1561,6 +1639,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private doneWasDragged = false;
   private hideTrashTimer: ReturnType<typeof setTimeout> | null = null;
   private tossTimer: ReturnType<typeof setTimeout> | null = null;
+  private dateFlyTimer: ReturnType<typeof setTimeout> | null = null;
   private catchTimer: ReturnType<typeof setTimeout> | null = null;
   private layoutTimer: ReturnType<typeof setTimeout> | null = null;
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1572,6 +1651,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private callSession: LiveSession | null = null;
   private callStartedAt = 0;
   private callGeneration = 0;
+  private callStopRequested = false;
   private callRecordingId: string | null = null;
   private voiceAudio: HTMLAudioElement | null = null;
   private clippyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1599,15 +1679,18 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   readonly clockMinutes = [0, 15, 30, 45];
   readonly sparkIndex = [0, 1, 2, 3, 4, 5];
   readonly spawning = signal<Record<string, number>>({});
+  readonly spawnRun = signal<Record<string, boolean>>({});
   readonly spawnBursts = signal<Array<{ id: string; noteId: string; x: number; y: number; w: number; h: number; hex: string }>>([]);
   readonly noteFlyout = signal<{
-    kind: 'color' | 'remind';
+    kind: 'color' | 'remind' | 'date';
     noteId: string;
     x: number;
     y: number;
     side: 'left' | 'right';
     expanded: boolean;
   } | null>(null);
+  readonly dateDraft = signal<{ year: number; month: number } | null>(null);
+  readonly dateCatching = signal(false);
   readonly remindDraft = signal<{
     year: number;
     month: number;
@@ -1644,6 +1727,18 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   });
   readonly remindCalendarCells = computed(() => {
     const draft = this.remindDraft();
+    if (!draft) return [];
+    const lead = (new Date(draft.year, draft.month, 1).getDay() + 6) % 7;
+    const days = new Date(draft.year, draft.month + 1, 0).getDate();
+    const cells: Array<{ day: number | null; key: string | null }> = [];
+    for (let i = 0; i < lead; i += 1) cells.push({ day: null, key: null });
+    for (let day = 1; day <= days; day += 1) {
+      cells.push({ day, key: BoardPage.localDayKey(new Date(draft.year, draft.month, day)) });
+    }
+    return cells;
+  });
+  readonly moveCalendarCells = computed(() => {
+    const draft = this.dateDraft();
     if (!draft) return [];
     const lead = (new Date(draft.year, draft.month, 1).getDay() + 6) % 7;
     const days = new Date(draft.year, draft.month + 1, 0).getDate();
@@ -1698,6 +1793,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.keepDoneOpen();
     if (this.tossTimer) clearTimeout(this.tossTimer);
     if (this.catchTimer) clearTimeout(this.catchTimer);
+    if (this.dateFlyTimer) clearTimeout(this.dateFlyTimer);
     if (this.layoutTimer) clearTimeout(this.layoutTimer);
     if (this.cacheTimer) clearTimeout(this.cacheTimer);
     if (this.dayTimer) clearTimeout(this.dayTimer);
@@ -1776,7 +1872,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     void this.ensureAudio()?.resume();
     const target = event.target as HTMLElement | null;
     if (this.calendarOpen() && !target?.closest('.date-filter')) this.calendarOpen.set(false);
-    if (!target?.closest('.note-flyout, .note-color-wrap, .note-remind-wrap')) {
+    if (!target?.closest('.note-flyout, .note-color-wrap, .note-remind-wrap, .note-date-wrap')) {
       this.closeNoteFlyout();
     }
   }
@@ -1863,6 +1959,16 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     return this.spawning()[note.id] != null;
   }
 
+  isSpawnRun(note: Note): boolean {
+    return this.spawnRun()[note.id] === true;
+  }
+
+  spawnTransform(note: Note): string | null {
+    if (!this.isSpawning(note)) return this.rotationOf(note);
+    if (this.isSpawnRun(note)) return null;
+    return `rotate(${note.rotation}deg) scale(0.2)`;
+  }
+
   noteIdentity(note: Note): string {
     return this.identityKeys.get(note.id) ?? note.id;
   }
@@ -1902,7 +2008,13 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     }
     const started = Date.now();
     this.spawning.update((map) => ({ ...map, [note.id]: started }));
-    this.playSpawnSound();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (this.spawning()[note.id] !== started) return;
+        this.spawnRun.update((map) => ({ ...map, [note.id]: true }));
+        this.playSpawnSound();
+      });
+    });
     window.setTimeout(() => {
       this.spawning.update((map) => {
         const hit = Object.entries(map).find(([, at]) => at === started);
@@ -1911,7 +2023,15 @@ export class BoardPage implements AfterViewInit, OnDestroy {
         delete next[hit[0]];
         return next;
       });
-    }, 800);
+      this.spawnRun.update((map) => {
+        const live = this.spawning();
+        const next = { ...map };
+        for (const id of Object.keys(next)) {
+          if (live[id] == null) delete next[id];
+        }
+        return next;
+      });
+    }, 980);
   }
 
   spawnBurstLeft(burst: { noteId: string; x: number }): number {
@@ -1931,6 +2051,13 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       if (map[fromId] == null) return map;
       const next = { ...map };
       next[toId] = next[fromId];
+      delete next[fromId];
+      return next;
+    });
+    this.spawnRun.update((map) => {
+      if (!map[fromId]) return map;
+      const next = { ...map };
+      next[toId] = true;
       delete next[fromId];
       return next;
     });
@@ -1955,10 +2082,10 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const gain = ctx.createGain();
     tap.type = 'sine';
     tap.frequency.setValueAtTime(420, now);
-    tap.frequency.exponentialRampToValueAtTime(220, now + 0.12);
+    tap.frequency.exponentialRampToValueAtTime(260, now + 0.14);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.03, now + 0.018);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    gain.gain.exponentialRampToValueAtTime(0.018, now + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
     tap.connect(gain);
     gain.connect(ctx.destination);
     tap.start(now);
@@ -2001,11 +2128,12 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     event.preventDefault();
     event.stopPropagation();
     this.draggingPad.set(true);
-    this.ghost.set({ x: event.clientX - 124, y: event.clientY - 40 });
+    this.padPointer = { x: event.clientX, y: event.clientY };
   }
 
   async startCallCapture(internalAudio = false): Promise<void> {
     const generation = ++this.callGeneration;
+    this.callStopRequested = false;
     this.callError.set('');
     this.callTranscript.set('');
     this.callRecordingId = null;
@@ -2024,6 +2152,10 @@ export class BoardPage implements AfterViewInit, OnDestroy {
         return;
       }
       this.callSession = session;
+      if (this.callStopRequested) {
+        await this.stopCallCapture();
+        return;
+      }
       if (this.clippyStep() === 'offer' || this.clippyStep() === 'recording') {
         this.clippySession = true;
         this.clippyStep.set('recording');
@@ -2031,6 +2163,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       }
     } catch {
       if (generation !== this.callGeneration) return;
+      this.callStopRequested = false;
       this.callLive.set(false);
       this.callSession = null;
       this.callStartedAt = 0;
@@ -2043,17 +2176,19 @@ export class BoardPage implements AfterViewInit, OnDestroy {
           ? 'No se pudo acceder al micrófono. Permite el audio para grabar la nota de voz.'
           : 'No se pudo acceder al micrófono. Permite el audio para capturar la llamada.',
       );
-      if (this.clippyStep() === 'recording') {
+      if (this.clippyStep() === 'recording' || this.clippyStep() === 'saving') {
         this.clippyStep.set('offer');
         this.clippyMood.set('ask');
       }
     }
   }
 
-  async stopCallCapture(): Promise<void> {
+  async stopCallCapture(event?: Event): Promise<void> {
+    event?.stopPropagation();
+    if (this.callBusy() || (this.callStopRequested && !this.callSession)) return;
     const session = this.callSession;
     const voice = this.voiceCapture();
-    this.callSession = null;
+    this.callStopRequested = true;
     this.callLive.set(false);
     if (this.callTimer) {
       clearInterval(this.callTimer);
@@ -2063,16 +2198,8 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       this.clippyStep.set('saving');
       this.clippyMood.set('think');
     }
-    if (!session) {
-      if (voice) {
-        this.callError.set('No se grabó audio. Inténtalo de nuevo.');
-        this.clippyStep.set('offer');
-        this.clippyMood.set('ask');
-        return;
-      }
-      this.afterCallStopped();
-      return;
-    }
+    if (!session) return;
+    this.callSession = null;
     this.callBusy.set(true);
     try {
       const result = await session.stop();
@@ -2103,6 +2230,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       }
     } finally {
       this.callBusy.set(false);
+      this.callStopRequested = false;
     }
     this.afterCallStopped();
   }
@@ -2504,6 +2632,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     }
     if (this.draggingPad()) {
       event.preventDefault();
+      const origin = this.padPointer;
+      if (!origin) return;
+      if (!this.ghost() && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) < 16) return;
       this.ghost.set({ x: event.clientX - 124, y: event.clientY - 40 });
       return;
     }
@@ -2624,15 +2755,20 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.toggleNoteFlyout(note, 'remind', expanded);
   }
 
-  private toggleNoteFlyout(note: Note, kind: 'color' | 'remind', expanded: boolean): void {
+  toggleDateMover(note: Note, expanded = false): void {
+    this.toggleNoteFlyout(note, 'date', expanded);
+  }
+
+  private toggleNoteFlyout(note: Note, kind: 'color' | 'remind' | 'date', expanded: boolean): void {
     const current = this.noteFlyout();
     if (current?.kind === kind && current.noteId === note.id) {
       this.closeNoteFlyout();
       return;
     }
     if (kind === 'remind') this.initRemindDraft(note);
-    const width = kind === 'remind' ? 268 : 156;
-    const height = kind === 'remind' ? 348 : 196;
+    if (kind === 'date') this.initDateDraft();
+    const width = kind === 'remind' ? 268 : kind === 'date' ? 196 : 156;
+    const height = kind === 'remind' ? 348 : kind === 'date' ? 228 : 196;
     const rect =
       (expanded
         ? document.querySelector('.note-expanded')?.getBoundingClientRect()
@@ -2650,6 +2786,48 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   closeNoteFlyout(): void {
     this.noteFlyout.set(null);
     this.remindDraft.set(null);
+    this.dateDraft.set(null);
+  }
+
+  private initDateDraft(): void {
+    const selected = BoardPage.parseDayKey(this.selectedDay());
+    const today = BoardPage.parseDayKey(this.todayKey());
+    const start = selected.getTime() >= today.getTime() ? selected : today;
+    this.dateDraft.set({ year: start.getFullYear(), month: start.getMonth() });
+  }
+
+  shiftMoveMonth(delta: number): void {
+    const draft = this.dateDraft();
+    if (!draft) return;
+    const date = new Date(draft.year, draft.month + delta, 1);
+    this.dateDraft.set({ year: date.getFullYear(), month: date.getMonth() });
+  }
+
+  shiftMoveYear(delta: number): void {
+    const draft = this.dateDraft();
+    if (!draft) return;
+    this.dateDraft.set({ year: draft.year + delta, month: draft.month });
+  }
+
+  moveNoteToDate(note: Note, key: string): void {
+    if (key < this.todayKey()) return;
+    if (this.dayKey(note.created_at) === key) {
+      this.closeNoteFlyout();
+      return;
+    }
+    const from = this.discardOrigin(note) ?? this.fallbackNoteRect(note);
+    this.closeNoteFlyout();
+    if (this.expandedId() === note.id) this.closeExpanded(false);
+    this.launchTowardCalendar(note, from);
+    note.created_at = this.timestampForDay(key);
+    note.updated_at = new Date().toISOString();
+    this.patchNote(note.id, { created_at: note.created_at });
+    this.notes.update((items) => [...items]);
+    if (this.layoutTimer) clearTimeout(this.layoutTimer);
+    this.layoutTimer = window.setTimeout(() => {
+      this.layoutTimer = null;
+      this.arrangeByPriority(undefined, false);
+    }, 420);
   }
 
   private soonRemindDate(): Date {
@@ -3428,16 +3606,20 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     return created === selected || this.dayKey(note.updated_at) === selected;
   }
 
-  private dayKey(iso: string): string {
+  dayKey(iso: string): string {
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return '';
     return BoardPage.localDayKey(date);
   }
 
-  private timestampForSelectedDay(): string {
-    const date = BoardPage.parseDayKey(this.selectedDay());
+  private timestampForDay(key: string): string {
+    const date = BoardPage.parseDayKey(key);
     date.setHours(12, 0, 0, 0);
     return date.toISOString();
+  }
+
+  private timestampForSelectedDay(): string {
+    return this.timestampForDay(this.selectedDay());
   }
 
   private normalizeText(value: string): string {
@@ -3619,6 +3801,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const from = card.getBoundingClientRect();
     const to = pile.getBoundingClientRect();
     this.flyingNote.set({
+      kind: 'done',
       x: from.left,
       y: from.top,
       w: from.width,
@@ -3627,6 +3810,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       dy: to.top + to.height / 3 - (from.top + from.height / 2),
       rot: `${note.rotation + 16}deg`,
       body: this.textOf(note),
+      color: this.colorOf(note),
       moving: false,
     });
     requestAnimationFrame(() => {
@@ -3635,6 +3819,38 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       });
     });
     window.setTimeout(() => this.flyingNote.set(null), 680);
+  }
+
+  private launchTowardCalendar(note: Note, from: DOMRect): void {
+    const cal =
+      document.querySelector('#board-date-filter .date-filter-btn') ??
+      document.querySelector('#board-date-filter');
+    const to = cal?.getBoundingClientRect() ?? new DOMRect(window.innerWidth - 180, 16, 148, 40);
+    if (this.dateFlyTimer) clearTimeout(this.dateFlyTimer);
+    this.dateCatching.set(true);
+    this.flyingNote.set({
+      kind: 'date',
+      x: from.left,
+      y: from.top,
+      w: from.width,
+      h: from.height,
+      dx: to.left + to.width / 2 - (from.left + from.width / 2),
+      dy: to.top + to.height / 2 - (from.top + from.height / 2),
+      rot: `${note.rotation + (from.left > to.left ? -22 : 18)}deg`,
+      body: this.preview(note),
+      color: this.colorOf(note),
+      moving: false,
+    });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.flyingNote.update((fly) => (fly ? { ...fly, moving: true } : null));
+      });
+    });
+    this.dateFlyTimer = window.setTimeout(() => {
+      this.flyingNote.set(null);
+      this.dateCatching.set(false);
+      this.dateFlyTimer = null;
+    }, 440);
   }
 
   private discardOrigin(note: Note): DOMRect | null {
@@ -3675,6 +3891,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       lift,
       spin: `${note.rotation + (from.left > to.left ? -34 : 38)}deg`,
       body: this.preview(note),
+      color: this.colorOf(note),
       moving: false,
     });
     requestAnimationFrame(() => {
@@ -4010,11 +4227,16 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const ghost = this.ghost();
     this.draggingPad.set(false);
     this.ghost.set(null);
+    this.padPointer = null;
     const stageEl = this.stage?.nativeElement;
-    if (!stageEl || !ghost) return;
+    if (!stageEl) return;
     const board = stageEl.getBoundingClientRect();
-    const pos_x = Math.min(Math.max(16, ghost.x - board.left), Math.max(16, board.width - 260));
-    const pos_y = Math.min(Math.max(16, ghost.y - board.top), Math.max(16, board.height - 300));
+    const pos_x = ghost
+      ? Math.min(Math.max(16, ghost.x - board.left), Math.max(16, board.width - 260))
+      : 36;
+    const pos_y = ghost
+      ? Math.min(Math.max(16, ghost.y - board.top), Math.max(16, board.height - 300))
+      : 132;
     const rotation = Math.round((Math.random() * 10 - 5) * 10) / 10;
     const createdAt = this.timestampForSelectedDay();
     const local: Note = {
@@ -4037,54 +4259,51 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       created_at: createdAt,
       updated_at: createdAt,
     };
-    this.notes.update((items) => [...items, local]);
-    this.bringForward(local);
     this.seenNoteIds?.add(local.id);
     this.revealNote(local);
-    queueMicrotask(() => document.getElementById(`note-body-${local.id}`)?.focus());
-    const persist = () => {
-      this.arrangeByPriority(local.id);
-      const placed = this.notes().find((item) => item.id === local.id) ?? local;
-      this.notesApi
-        .create({
-          title: '',
-          body: '',
-          color: 'yellow',
-          priority: 1,
-          pos_x: placed.pos_x,
-          pos_y: placed.pos_y,
-          rotation,
-          width: NOTE_W,
-          height: NOTE_H,
-          created_at: createdAt,
-        })
-        .subscribe({
-          next: (created) => {
-            const current = this.notes().find((item) => item.id === local.id);
-            const saved = this.normalize({
-              ...created,
-              pos_x: current?.pos_x ?? created.pos_x,
-              pos_y: current?.pos_y ?? created.pos_y,
-              rotation,
-              priority: current?.priority ?? 1,
-              created_at: createdAt,
-              updated_at: createdAt,
+    this.notes.update((items) => [...items, local]);
+    this.bringForward(local);
+    this.arrangeByPriority(local.id);
+    const placed = this.notes().find((item) => item.id === local.id) ?? local;
+    window.setTimeout(() => document.getElementById(`note-body-${local.id}`)?.focus(), 920);
+    this.notesApi
+      .create({
+        title: '',
+        body: '',
+        color: 'yellow',
+        priority: 1,
+        pos_x: placed.pos_x,
+        pos_y: placed.pos_y,
+        rotation,
+        width: NOTE_W,
+        height: NOTE_H,
+        created_at: createdAt,
+      })
+      .subscribe({
+        next: (created) => {
+          const current = this.notes().find((item) => item.id === local.id);
+          const saved = this.normalize({
+            ...created,
+            pos_x: current?.pos_x ?? created.pos_x,
+            pos_y: current?.pos_y ?? created.pos_y,
+            rotation,
+            priority: current?.priority ?? 1,
+            created_at: createdAt,
+            updated_at: createdAt,
+          });
+          this.notes.update((items) => items.map((item) => (item.id === local.id ? saved : item)));
+          this.transferSpawn(local.id, saved.id);
+          this.bringForward(saved);
+          this.cache();
+          if (this.dayKey(created.created_at) !== this.selectedDay()) {
+            this.notesApi.update(saved.id, { created_at: createdAt }).subscribe({
+              error: () => this.error.set('No se pudo guardar la fecha de la nota.'),
             });
-            this.notes.update((items) => items.map((item) => (item.id === local.id ? saved : item)));
-            this.transferSpawn(local.id, saved.id);
-            this.bringForward(saved);
-            this.cache();
-            if (this.dayKey(created.created_at) !== this.selectedDay()) {
-              this.notesApi.update(saved.id, { created_at: createdAt }).subscribe({
-                error: () => this.error.set('No se pudo guardar la fecha de la nota.'),
-              });
-            }
-            queueMicrotask(() => document.getElementById(`note-body-${saved.id}`)?.focus());
-          },
-          error: () => this.error.set('No se pudo guardar la nota en el servidor.'),
-        });
-    };
-    requestAnimationFrame(() => requestAnimationFrame(persist));
+          }
+          window.setTimeout(() => document.getElementById(`note-body-${saved.id}`)?.focus(), 40);
+        },
+        error: () => this.error.set('No se pudo guardar la nota en el servidor.'),
+      });
   }
 
   private cache(): void {

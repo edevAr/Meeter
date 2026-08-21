@@ -65,7 +65,7 @@ export class LiveCaptureService {
     const speaker = options.internalAudio ? await openSpeakerAudio() : null;
 
     const audioContext = new AudioContext();
-    if (audioContext.state === 'suspended') await audioContext.resume();
+    if (audioContext.state === 'suspended') void audioContext.resume();
     const keepAudio = window.setInterval(() => {
       if (!stopped && audioContext.state === 'suspended') void audioContext.resume();
     }, 1500);

@@ -211,6 +211,7 @@ button {
 }
 
 .sticky-paper {
+  overflow: visible;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0) 26%),
     repeating-linear-gradient(0deg, rgba(140, 90, 0, 0.07) 28px, rgba(140, 90, 0, 0.07) 29px, transparent 29px, transparent 56px),
@@ -231,22 +232,25 @@ button {
 .sticky-paper.is-spawning {
   z-index: 82 !important;
   transform-origin: center center;
-  will-change: transform, opacity, left, top;
   backface-visibility: hidden;
-  transition:
-    left 1.25s cubic-bezier(0.33, 0.08, 0.18, 1),
-    top 1.25s cubic-bezier(0.33, 0.08, 0.18, 1) !important;
-  animation: note-spawn 0.72s cubic-bezier(0.22, 1, 0.36, 1) both !important;
+  opacity: 0;
+  transform: rotate(var(--note-rot, -1.5deg)) scale3d(0.2, 0.2, 1);
+  transition: none !important;
+}
+
+.sticky-paper.is-spawning.is-spawn-run {
+  opacity: 0.18;
+  animation: note-spawn 0.88s cubic-bezier(0.33, 0.05, 0.2, 1) forwards;
 }
 
 @keyframes note-spawn {
   0% {
-    opacity: 0.2;
-    transform: rotate(var(--note-rot, -1.5deg)) scale(0.18);
+    opacity: 0.18;
+    transform: rotate(var(--note-rot, -1.5deg)) scale3d(0.2, 0.2, 1);
   }
   100% {
     opacity: 1;
-    transform: rotate(var(--note-rot, -1.5deg)) scale(1);
+    transform: rotate(var(--note-rot, -1.5deg)) scale3d(1, 1, 1);
   }
 }
 
@@ -372,6 +376,7 @@ button {
 
 .note-drag-bar {
   cursor: grab;
+  overflow: visible;
 }
 
 .sticky-paper.is-dragging .note-drag-bar {
@@ -525,6 +530,20 @@ button {
     #ffe45c;
 }
 
+.note-pad-front {
+  transition: transform 0.2s ease;
+}
+
+.note-pad:hover .note-pad-front {
+  transform: translateY(-4px);
+}
+
+.note-pad.is-held .note-pad-front,
+.note-pad:active .note-pad-front {
+  transform: none;
+  transition: none;
+}
+
 .note-icon-btn {
   display: flex;
   height: 14px;
@@ -582,6 +601,23 @@ button {
 .note-icon-btn.is-remind.is-set {
   background: #3b2a12;
   color: #ffe45c;
+}
+
+.note-icon-btn.is-date {
+  height: 20px;
+  width: 20px;
+  flex: none;
+  background: #3b2a12;
+  color: #ffe45c;
+}
+
+.note-icon-btn.is-date svg {
+  height: 12px;
+  width: 12px;
+}
+
+.note-icon-btn.is-date:hover {
+  background: #24180b;
 }
 
 .note-icon-btn.is-alarming {
@@ -695,6 +731,10 @@ button {
   width: min(268px, calc(100vw - 16px));
 }
 
+.note-flyout.is-date {
+  width: min(196px, calc(100vw - 16px));
+}
+
 .note-flyout-kicker {
   margin-bottom: 6px;
   font-size: 8px;
@@ -799,6 +839,19 @@ button {
 
 .remind-cal-day.is-today:not(.is-on) {
   box-shadow: inset 0 0 0 1px #c23b22;
+}
+
+.remind-cal-day.is-off,
+.remind-cal-day:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.note-flyout-hint {
+  margin-top: 8px;
+  font-size: 9px;
+  line-height: 1.35;
+  color: #7a5a28;
 }
 
 .alarm-clock {
@@ -1496,6 +1549,26 @@ button {
     opacity 0.55s ease;
 }
 
+.date-fly {
+  z-index: 28;
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+
+.date-fly.in-flight {
+  transform: translate(var(--dx), var(--dy)) scale(0.08) rotate(var(--rot));
+  opacity: 0;
+  transition:
+    transform 0.4s cubic-bezier(0.22, 0.82, 0.28, 1),
+    opacity 0.1s linear 0.24s;
+}
+
+.date-filter-btn.is-catching {
+  border-color: #ffe45c !important;
+  background: rgba(0, 0, 0, 0.72) !important;
+  box-shadow: 0 0 0 3px rgba(255, 228, 92, 0.28);
+}
+
 .done-sheet {
   width: 40px;
   height: 48px;
@@ -2011,6 +2084,10 @@ button {
   pointer-events: none;
 }
 
+.clippy-dock.is-live .clippy {
+  pointer-events: none;
+}
+
 .clippy-dock.is-live .clippy-rings,
 .clippy-dock.is-live .clippy-rings::before,
 .clippy-dock.is-live .clippy-rings::after {
@@ -2436,6 +2513,8 @@ button {
 }
 
 .clippy-actions {
+  position: relative;
+  z-index: 5;
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
@@ -2710,6 +2789,7 @@ button {
   }
 
   .sticky-paper.is-spawning,
+  .sticky-paper.is-spawning.is-spawn-run,
   .note-spawn-burst,
   .note-spawn-flash,
   .note-spawn-ring,
