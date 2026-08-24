@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../api.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../widgets.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -52,74 +53,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _message = '';
     });
     await context.read<ApiClient>().setBaseUrl(_url.text);
-    setState(() => _message = 'API URL saved. The phone will talk to this backend.');
+    setState(() => _message = 'URL guardada. El teléfono hablará con este backend.');
     await _refreshMeta();
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const Text('Settings', style: TextStyle(color: kText, fontSize: 28, fontWeight: FontWeight.w800)),
-        const SizedBox(height: 6),
-        const Text(
-          'The mobile app records on-device, then sends audio to your FastAPI backend for Whisper and AI analysis.',
-          style: TextStyle(color: kMuted),
-        ),
-        const SizedBox(height: 20),
-        const Text('API base URL', style: TextStyle(color: kText, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _url,
-          autocorrect: false,
-          style: const TextStyle(color: kText),
-          decoration: const InputDecoration(hintText: defaultApiBase),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Physical phones must use the Mac LAN IP, not 127.0.0.1. Default: $defaultApiBase. Same Wi-Fi as the Mac. If the Mac IP changes, update lanHost in lib/api.dart.',
-          style: TextStyle(color: kMuted, fontSize: 12),
-        ),
-        const SizedBox(height: 16),
-        FilledButton(onPressed: _save, child: const Text('Save')),
-        if (_message.isNotEmpty) Padding(
-          padding: const EdgeInsets.only(top: 12),
-          child: Text(_message, style: const TextStyle(color: kSuccess)),
-        ),
-        if (_error.isNotEmpty) Padding(
-          padding: const EdgeInsets.only(top: 12),
-          child: Text(_error, style: const TextStyle(color: kDanger)),
-        ),
-        if (_meta != null)
-          Container(
-            margin: const EdgeInsets.only(top: 24),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: kCard,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: kBorder),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Backend', style: TextStyle(color: kText, fontWeight: FontWeight.w700)),
-                Text('Transcription: ${_meta!.transcriptionProvider}', style: const TextStyle(color: kMuted)),
-                Text(
-                  'Cloud STT: ${_meta!.transcriptionIsCloud ? (_meta!.allowCloudTranscription ? 'allowed' : 'blocked') : 'local'}',
-                  style: const TextStyle(color: kMuted),
-                ),
-                Text('AI: ${_meta!.aiProvider} / ${_meta!.aiModel}', style: const TextStyle(color: kMuted)),
-                Text('API key configured: ${_meta!.apiKeyConfigured ? 'yes' : 'no'}', style: const TextStyle(color: kMuted)),
-                const SizedBox(height: 12),
-                const Text(
-                  'Audio is not uploaded to a cloud STT provider unless ALLOW_CLOUD_TRANSCRIPTION is enabled on the server. LLM analysis sends transcript text only, after you confirm in the app.',
-                  style: TextStyle(color: kMuted, fontSize: 12),
-                ),
-              ],
+    final api = context.watch<ApiClient>();
+    return CorkBackdrop(
+      child: SafeArea(
+        child: ListView(
+        padding: EdgeInsets.fromLTRB(pagePadding(context), 8, pagePadding(context), 32),
+        children: [
+          const PageHeader(kicker: 'Cuenta', title: 'Ajustes'),
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Column(
+                children: [
+                  PaperCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(api.user?.name.isNotEmpty == true ? api.user!.name : 'Meeter', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                        Text(api.user?.email ?? '', style: const TextStyle(color: kMuted)),
+                        const SizedBox(height: 16),
+                        const Text('URL del API', style: TextStyle(fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 6),
+                        TextField(controller: _url, autocorrect: false, decoration: const InputDecoration(hintText: defaultApiBase)),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'En un teléfono físico usa la IP de tu Mac, no 127.0.0.1. Misma Wi‑Fi. Puerto 8001.',
+                          style: TextStyle(color: kMuted, fontSize: 12),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton(onPressed: _save, child: const Text('Guardar URL')),
+                        const SizedBox(height: 8),
+                        OutlinedButton(
+                          onPressed: () => api.logout(),
+                          child: const Text('Salir'),
+                        ),
+                        if (_message.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: Text(_message, style: const TextStyle(color: kMint))),
+                        if (_error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: Text(_error, style: const TextStyle(color: kDanger))),
+                      ],
+                    ),
+                  ),
+                  if (_meta != null) ...[
+                    const SizedBox(height: 14),
+                    PaperCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Backend', style: TextStyle(fontWeight: FontWeight.w800)),
+                          Text('Transcripción: ${_meta!.transcriptionProvider}', style: const TextStyle(color: kMuted)),
+                          Text('IA: ${_meta!.aiProvider} / ${_meta!.aiModel}', style: const TextStyle(color: kMuted)),
+                          Text('Clave de IA: ${_meta!.apiKeyConfigured ? 'sí' : 'no'}', style: const TextStyle(color: kMuted)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
-      ],
+        ],
+      ),
+      ),
     );
   }
 }

@@ -1,3 +1,123 @@
+class AuthUser {
+  AuthUser({required this.id, required this.email, required this.name});
+
+  final String id;
+  final String email;
+  final String name;
+
+  factory AuthUser.fromJson(Map<String, dynamic> json) {
+    return AuthUser(
+      id: json['id'] as String,
+      email: json['email'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'id': id, 'email': email, 'name': name};
+}
+
+class Note {
+  Note({
+    required this.id,
+    required this.title,
+    required this.body,
+    required this.color,
+    required this.pinned,
+    required this.archived,
+    required this.priority,
+    required this.createdAt,
+    required this.updatedAt,
+    this.recordingId,
+    this.reminderAt,
+    this.access = 'owner',
+    this.ownerName,
+    this.shareCount = 0,
+  });
+
+  final String id;
+  String title;
+  String body;
+  String color;
+  bool pinned;
+  bool archived;
+  int priority;
+  final String? recordingId;
+  String? reminderAt;
+  final String createdAt;
+  String updatedAt;
+  String access;
+  String? ownerName;
+  int shareCount;
+
+  bool get isOwner => access != 'read' && access != 'write';
+  bool get canEdit => access != 'read';
+  bool get canShare => isOwner && !archived;
+
+  factory Note.fromJson(Map<String, dynamic> json) {
+    return Note(
+      id: json['id'] as String,
+      title: json['title'] as String? ?? '',
+      body: json['body'] as String? ?? '',
+      color: json['color'] as String? ?? 'yellow',
+      pinned: json['pinned'] as bool? ?? false,
+      archived: json['archived'] as bool? ?? false,
+      priority: json['priority'] as int? ?? 1,
+      recordingId: json['recording_id'] as String?,
+      reminderAt: json['reminder_at'] as String?,
+      createdAt: json['created_at'] as String? ?? '',
+      updatedAt: json['updated_at'] as String? ?? '',
+      access: json['access'] as String? ?? 'owner',
+      ownerName: json['owner_name'] as String?,
+      shareCount: json['share_count'] as int? ?? 0,
+    );
+  }
+
+  String get plainText {
+    return body
+        .replaceAll(RegExp(r'<!--meeter-images:.*?-->', dotAll: true), '')
+        .replaceAll(RegExp(r'<!--meeter-marks:.*?-->', dotAll: true), '')
+        .trim();
+  }
+
+  String mergeText(String text) {
+    final images = RegExp(r'<!--meeter-images:.*?-->', dotAll: true).firstMatch(body)?.group(0) ?? '';
+    final marks = RegExp(r'<!--meeter-marks:.*?-->', dotAll: true).firstMatch(body)?.group(0) ?? '';
+    return '$text$images$marks';
+  }
+}
+
+class NoteShare {
+  NoteShare({
+    required this.id,
+    required this.noteId,
+    required this.userId,
+    required this.name,
+    required this.email,
+    required this.canRead,
+    required this.canWrite,
+  });
+
+  final String id;
+  final String noteId;
+  final String userId;
+  final String name;
+  final String email;
+  final bool canRead;
+  final bool canWrite;
+
+  factory NoteShare.fromJson(Map<String, dynamic> json) {
+    return NoteShare(
+      id: json['id'] as String,
+      noteId: json['note_id'] as String,
+      userId: json['user_id'] as String,
+      name: json['name'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      canRead: json['can_read'] as bool? ?? true,
+      canWrite: json['can_write'] as bool? ?? false,
+    );
+  }
+}
+
 class Recording {
   Recording({
     required this.id,
@@ -7,9 +127,7 @@ class Recording {
     required this.createdAt,
     required this.status,
     required this.source,
-    this.language,
     this.errorMessage,
-    this.deviceName,
   });
 
   final String id;
@@ -19,9 +137,7 @@ class Recording {
   final String createdAt;
   final String status;
   final String source;
-  final String? language;
   final String? errorMessage;
-  final String? deviceName;
 
   factory Recording.fromJson(Map<String, dynamic> json) {
     return Recording(
@@ -32,15 +148,11 @@ class Recording {
       createdAt: json['created_at'] as String,
       status: json['status'] as String,
       source: json['source'] as String? ?? 'microphone',
-      language: json['language'] as String?,
       errorMessage: json['error_message'] as String?,
-      deviceName: json['device_name'] as String?,
     );
   }
 
-  bool get canTranscribe =>
-      {'recorded', 'transcribed', 'analyzed', 'failed'}.contains(status);
-
+  bool get canTranscribe => {'recorded', 'transcribed', 'analyzed', 'failed'}.contains(status);
   bool get canAnalyze => {'transcribed', 'analyzed'}.contains(status);
 }
 
@@ -76,13 +188,11 @@ class Transcript {
     required this.recordingId,
     required this.text,
     required this.segments,
-    this.language,
   });
 
   final String id;
   final String recordingId;
   final String text;
-  final String? language;
   final List<TranscriptSegment> segments;
 
   factory Transcript.fromJson(Map<String, dynamic> json) {
@@ -91,10 +201,7 @@ class Transcript {
       id: json['id'] as String,
       recordingId: json['recording_id'] as String,
       text: json['text'] as String? ?? '',
-      language: json['language'] as String?,
-      segments: raw
-          .map((item) => TranscriptSegment.fromJson(item as Map<String, dynamic>))
-          .toList(),
+      segments: raw.map((item) => TranscriptSegment.fromJson(item as Map<String, dynamic>)).toList(),
     );
   }
 }
@@ -137,83 +244,62 @@ class ActionItem {
     required this.task,
     required this.priority,
     required this.status,
-    this.recordingTitle,
     this.owner,
-    this.dueDate,
   });
 
   final String id;
   final String recordingId;
-  final String? recordingTitle;
   final String task;
   final String? owner;
-  final String? dueDate;
   final String priority;
   final String status;
 
   factory ActionItem.fromJson(Map<String, dynamic> json) {
     return ActionItem(
       id: json['id'] as String,
-      recordingId: json['recording_id'] as String,
-      recordingTitle: json['recording_title'] as String?,
+      recordingId: json['recording_id'] as String? ?? '',
       task: json['task'] as String,
       owner: json['owner'] as String?,
-      dueDate: json['due_date'] as String?,
       priority: json['priority'] as String? ?? 'medium',
       status: json['status'] as String? ?? 'pending',
     );
   }
-
-  String get displayOwner => owner?.isNotEmpty == true ? owner! : 'Not specified';
-  String get displayDue => dueDate?.isNotEmpty == true ? dueDate! : 'Not specified';
 }
 
-class Dashboard {
-  Dashboard({
-    required this.recordings,
-    required this.transcribed,
-    required this.analyzed,
-    required this.recent,
-  });
-
-  final int recordings;
-  final int transcribed;
-  final int analyzed;
-  final List<Recording> recent;
-
-  factory Dashboard.fromJson(Map<String, dynamic> json) {
-    final raw = json['recent'] as List<dynamic>? ?? [];
-    return Dashboard(
-      recordings: json['recordings'] as int? ?? 0,
-      transcribed: json['transcribed'] as int? ?? 0,
-      analyzed: json['analyzed'] as int? ?? 0,
-      recent: raw.map((item) => Recording.fromJson(item as Map<String, dynamic>)).toList(),
-    );
-  }
-}
-
-class SearchHit {
-  SearchHit({
-    required this.kind,
+class AgendaItem {
+  AgendaItem({
     required this.id,
-    required this.recordingId,
+    required this.kind,
     required this.title,
-    required this.snippet,
+    required this.priority,
+    required this.status,
+    required this.overdue,
+    this.dueDate,
+    this.noteId,
+    this.recordingId,
   });
 
-  final String kind;
   final String id;
-  final String recordingId;
+  final String kind;
   final String title;
-  final String snippet;
+  final String? dueDate;
+  final String priority;
+  final String status;
+  final bool overdue;
+  final String? noteId;
+  final String? recordingId;
 
-  factory SearchHit.fromJson(Map<String, dynamic> json) {
-    return SearchHit(
-      kind: json['kind'] as String,
+  factory AgendaItem.fromJson(Map<String, dynamic> json) {
+    return AgendaItem(
       id: json['id'] as String,
-      recordingId: json['recording_id'] as String,
-      title: json['title'] as String,
-      snippet: json['snippet'] as String? ?? '',
+      kind: json['kind'] as String? ?? 'task',
+      title: json['title'] as String? ?? '',
+      dueDate: json['due_date'] as String?,
+      priority: json['priority'] as String? ?? 'medium',
+      status: json['status'] as String? ?? 'pending',
+      overdue: json['overdue'] as bool? ?? false,
+      noteId: json['note_id'] as String?,
+      recordingId: json['recording_id'] as String?,
     );
   }
 }
@@ -221,33 +307,21 @@ class SearchHit {
 class Meta {
   Meta({
     required this.transcriptionProvider,
-    required this.transcriptionIsCloud,
-    required this.allowCloudTranscription,
     required this.aiProvider,
     required this.aiModel,
-    required this.aiIsCloud,
-    required this.defaultLanguage,
     required this.apiKeyConfigured,
   });
 
   final String transcriptionProvider;
-  final bool transcriptionIsCloud;
-  final bool allowCloudTranscription;
   final String aiProvider;
   final String aiModel;
-  final bool aiIsCloud;
-  final String defaultLanguage;
   final bool apiKeyConfigured;
 
   factory Meta.fromJson(Map<String, dynamic> json) {
     return Meta(
       transcriptionProvider: json['transcription_provider'] as String? ?? 'whisper',
-      transcriptionIsCloud: json['transcription_is_cloud'] as bool? ?? false,
-      allowCloudTranscription: json['allow_cloud_transcription'] as bool? ?? false,
       aiProvider: json['ai_provider'] as String? ?? 'openai',
       aiModel: json['ai_model'] as String? ?? '',
-      aiIsCloud: json['ai_is_cloud'] as bool? ?? true,
-      defaultLanguage: json['default_language'] as String? ?? 'auto',
       apiKeyConfigured: json['api_key_configured'] as bool? ?? false,
     );
   }

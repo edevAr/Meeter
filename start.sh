@@ -18,7 +18,8 @@ if [[ ! -f .env ]]; then
   echo "Creé .env desde .env.example"
 fi
 
-echo "→ Backend  http://127.0.0.1:8001"
+LAN_IP="${MEETER_LAN_IP:-192.168.0.31}"
+echo "→ Backend  http://${LAN_IP}:8001"
 docker compose up -d
 
 if [[ ! -d web/node_modules ]]; then
@@ -26,7 +27,8 @@ if [[ ! -d web/node_modules ]]; then
   (cd web && npm install)
 fi
 
-echo "→ Frontend http://127.0.0.1:4200"
+echo "→ Frontend http://${LAN_IP}:4200"
+echo "  En el teléfono o tablet usa esa IP, misma Wi‑Fi."
 echo "  Ctrl+C detiene la web. El API sigue en Docker (docker compose stop para apagarlo)."
 cd web
 exec npm start

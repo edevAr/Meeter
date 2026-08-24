@@ -21,6 +21,20 @@ export interface Note {
   reminder_silenced: boolean;
   created_at: string;
   updated_at: string;
+  access?: 'owner' | 'read' | 'write';
+  owner_name?: string | null;
+  share_count?: number;
+}
+
+export interface NoteShare {
+  id: string;
+  note_id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  can_read: boolean;
+  can_write: boolean;
+  created_at: string;
 }
 
 export interface Task {

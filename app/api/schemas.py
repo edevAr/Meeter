@@ -7,6 +7,44 @@ from pydantic import BaseModel, Field
 from app.domain.models.enums import ActionItemPriority, ActionItemStatus, AudioSourceType, RecordingStatus
 
 
+class RegisterIn(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+
+class ResetPasswordIn(BaseModel):
+    email: str
+    code: str
+    password: str
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    name: str
+
+
+class SessionOut(BaseModel):
+    token: str
+    user: UserOut
+
+
+class ForgotPasswordOut(BaseModel):
+    detail: str
+    reset_code: str | None = None
+
+
+
 class RecordingCreate(BaseModel):
     title: str = "Untitled recording"
     source: AudioSourceType = AudioSourceType.MICROPHONE
@@ -189,6 +227,31 @@ class NoteOut(BaseModel):
     reminder_silenced: bool = False
     created_at: datetime
     updated_at: datetime
+    access: str = "owner"
+    owner_name: str | None = None
+    share_count: int = 0
+
+
+class NoteShareIn(BaseModel):
+    identifier: str
+    can_read: bool = True
+    can_write: bool = False
+
+
+class NoteSharePatch(BaseModel):
+    can_read: bool | None = None
+    can_write: bool | None = None
+
+
+class NoteShareOut(BaseModel):
+    id: str
+    note_id: str
+    user_id: str
+    name: str
+    email: str
+    can_read: bool
+    can_write: bool
+    created_at: datetime
 
 
 class TaskCreate(BaseModel):

@@ -1,17 +1,20 @@
 import { NgClass } from '@angular/common';
 import { AfterViewInit, Component, ElementRef, HostListener, OnDestroy, ViewChild, computed, effect, inject, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { HttpErrorResponse } from '@angular/common/http';
 import { forkJoin, firstValueFrom } from 'rxjs';
 
 import { NotesService } from '../../core/notes.service';
 import { LiveCaptureService, LiveSession } from '../../core/live-capture.service';
 import { RecordingsApi } from '../../core/recordings.service';
-import { Note } from '../../core/models';
+import { AuthService } from '../../core/auth.service';
+import { PrefsService } from '../../core/prefs.service';
+import { Note, NoteShare } from '../../core/models';
 
 const IMAGE_MARK = '<!--meeter-images:';
 const MARK_MARK = '<!--meeter-marks:';
-const NOTE_W = 156;
-const NOTE_H = 176;
+const NOTE_W = 180;
+const NOTE_H = 204;
 const NOTE_COLORS = [
   { id: 'yellow', hex: '#ffe45c', label: 'Amarillo' },
   { id: 'amber', hex: '#ffb14a', label: 'Naranja' },
@@ -65,10 +68,10 @@ type NoteMark = {
       <div class="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/35 to-transparent"></div>
       <header class="relative z-30 flex items-start justify-between gap-4 px-6 pt-5">
         <div class="pointer-events-none">
-          <p class="text-[11px] uppercase tracking-[0.32em] text-sun/80">Atelier</p>
-          <h2 class="font-note text-3xl font-semibold tracking-tight text-[#f8ecd4]">Tablero</h2>
-          <p class="mt-1 max-w-xl text-[13px] text-[#d7c4a6]/80">
-            Arrastra la nota amarilla al corcho. Hecho la apila. Eliminar la envía al basurero.
+          <p class="board-kicker text-[11px] uppercase tracking-[0.32em]">{{ t('board.kicker') }}</p>
+          <h2 class="board-title font-note text-3xl font-semibold tracking-tight">{{ t('board.title') }}</h2>
+          <p class="board-lede mt-1 max-w-xl text-[13px]">
+            {{ t('board.hint') }}
           </p>
         </div>
         <div class="mt-1 flex items-start gap-2">
@@ -81,7 +84,7 @@ type NoteMark = {
               class="w-full rounded-full border border-[#f8ecd4]/20 bg-black/40 py-2.5 pl-10 pr-10 text-sm text-[#f8ecd4] outline-none placeholder:text-[#d7c4a6]/55 backdrop-blur-md transition focus:border-[#ffe45c]/50 focus:bg-black/55"
               type="search"
               name="board-search"
-              placeholder="Buscar notas…"
+              [placeholder]="t('board.search')"
               autocomplete="off"
               [ngModel]="query()"
               (ngModelChange)="query.set($event)"
@@ -92,7 +95,7 @@ type NoteMark = {
                 type="button"
                 class="absolute right-2.5 flex h-7 w-7 items-center justify-center rounded-full text-[#d7c4a6] hover:bg-white/10 hover:text-[#f8ecd4]"
                 (click)="query.set('')"
-                aria-label="Limpiar búsqueda"
+                [attr.aria-label]="t('board.clearSearch')"
               >
                 ×
               </button>
@@ -113,7 +116,7 @@ type NoteMark = {
               </svg>
               <span class="min-w-0">
                 <span class="block text-[9px] font-extrabold uppercase tracking-[0.2em] text-[#d7c4a6]/75">
-                  {{ isToday() ? 'Hoy' : 'Fecha' }}
+                  {{ isToday() ? t('board.today') : t('board.date') }}
                 </span>
                 <span class="block truncate text-[12px] leading-tight text-[#f8ecd4]">{{ dateLabel() }}</span>
               </span>
@@ -125,13 +128,13 @@ type NoteMark = {
                   <button type="button" class="cal-nav" (click)="shiftYear(-1)" aria-label="Año anterior">«</button>
                   <button type="button" class="cal-nav" (click)="shiftMonth(-1)" aria-label="Mes anterior">‹</button>
                   <p class="min-w-0 flex-1 text-center font-note text-[13px] leading-none text-[#3b2a12]">
-                    {{ monthNames[viewMonth()] }} {{ viewYear() }}
+                    {{ monthNames()[viewMonth()] }} {{ viewYear() }}
                   </p>
                   <button type="button" class="cal-nav" (click)="shiftMonth(1)" aria-label="Mes siguiente">›</button>
                   <button type="button" class="cal-nav" (click)="shiftYear(1)" aria-label="Año siguiente">»</button>
                 </div>
                 <div class="mb-0.5 grid grid-cols-7 text-center text-[8px] font-extrabold uppercase tracking-wide text-[#7a5a28]/80">
-                  @for (day of weekDays; track day) {
+                  @for (day of weekDays(); track $index) {
                     <span>{{ day }}</span>
                   }
                 </div>
@@ -159,9 +162,58 @@ type NoteMark = {
                     class="mt-2 w-full rounded-full bg-[#3b2a12] py-1 text-[10px] font-extrabold uppercase tracking-[0.18em] text-[#ffe45c]"
                     (click)="selectDay(todayKey())"
                   >
-                    Ir a hoy
+                    {{ t('board.goToday') }}
                   </button>
                 }
+              </div>
+            }
+          </div>
+          <div class="account-wrap relative" (pointerdown)="$event.stopPropagation()">
+            <button
+              type="button"
+              class="account-avatar"
+              [class.is-open]="accountOpen()"
+              [attr.aria-expanded]="accountOpen()"
+              [attr.aria-label]="t('account.open')"
+              (click)="toggleAccount($event)"
+            >
+              <span>{{ initials() }}</span>
+            </button>
+            @if (accountOpen()) {
+              <div class="account-menu" role="dialog" [attr.aria-label]="t('account.open')">
+                <span class="account-menu-tape"></span>
+                <div class="account-person">
+                  <span class="account-person-mark">{{ initials() }}</span>
+                  <div class="min-w-0">
+                    <p class="account-person-name">{{ displayName() }}</p>
+                    @if (auth.user()?.email) {
+                      <p class="account-person-email">{{ auth.user()?.email }}</p>
+                    }
+                  </div>
+                </div>
+                <p class="account-label">{{ t('account.language') }}</p>
+                <div class="account-pills">
+                  <button type="button" [class.is-on]="prefs.lang() === 'es'" (click)="prefs.setLang('es')">{{ t('account.spanish') }}</button>
+                  <button type="button" [class.is-on]="prefs.lang() === 'en'" (click)="prefs.setLang('en')">{{ t('account.english') }}</button>
+                </div>
+                <p class="account-label">{{ t('account.color') }}</p>
+                <div class="account-pills">
+                  <button type="button" [class.is-on]="prefs.theme() === 'light'" (click)="prefs.setTheme('light')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 3v1.6M12 19.4V21M4.6 4.6l1.1 1.1M18.3 18.3l1.1 1.1M3 12h1.6M19.4 12H21M4.6 19.4l1.1-1.1M18.3 5.7l1.1-1.1"/></svg>
+                    {{ t('account.light') }}
+                  </button>
+                  <button type="button" [class.is-on]="prefs.theme() === 'dark'" (click)="prefs.setTheme('dark')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16.2 13.2A6.2 6.2 0 0 1 10.4 5a6.4 6.4 0 1 0 5.8 8.2Z"/></svg>
+                    {{ t('account.dark') }}
+                  </button>
+                </div>
+                <button type="button" class="account-logout" (click)="logout()">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M10 7V5a2 2 0 0 1 2-2h7v18h-7a2 2 0 0 1-2-2v-2"/>
+                    <path d="M4 12h11M12 8l4 4-4 4"/>
+                  </svg>
+                  {{ t('account.logout') }}
+                </button>
               </div>
             }
           </div>
@@ -171,14 +223,14 @@ type NoteMark = {
       @if (!visibleNotes().length) {
         <p class="pointer-events-none absolute left-1/2 top-36 z-20 -translate-x-1/2 rounded-full bg-black/45 px-4 py-2 text-sm text-[#d7c4a6]">
           @if (query().trim()) {
-            No hay notas que coincidan con “{{ query().trim() }}”
+            {{ t('board.emptyQuery') }} “{{ query().trim() }}”
           } @else {
-            No hay notas el {{ dateLabel() }}
+            {{ t('board.emptyDay') }} {{ dateLabel() }}
           }
         </p>
       }
 
-      <div #stage class="absolute inset-0 overflow-auto pb-[200px]">
+      <div #stage class="absolute inset-0 z-10 overflow-auto pb-[200px]">
         @for (note of visibleNotes(); track noteIdentity(note)) {
           <article
             class="sticky-paper absolute flex flex-col rounded-[3px] p-3 pb-2 shadow-sticky"
@@ -273,28 +325,30 @@ type NoteMark = {
                     <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke-linecap="round"/>
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  class="note-icon-btn is-done"
-                  title="Hecho"
-                  (click)="markDone(note); $event.stopPropagation()"
-                  (pointerdown)="$event.stopPropagation()"
-                >
-                  <svg class="h-2 w-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-                    <path d="M5 12.5l4.2 4.2L19 7" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  class="note-icon-btn is-delete"
-                  title="Eliminar"
-                  (click)="discard(note); $event.stopPropagation()"
-                  (pointerdown)="$event.stopPropagation()"
-                >
-                  <svg class="h-2 w-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-                    <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
-                  </svg>
-                </button>
+                @if (isOwner(note)) {
+                  <button
+                    type="button"
+                    class="note-icon-btn is-done"
+                    title="Hecho"
+                    (click)="markDone(note); $event.stopPropagation()"
+                    (pointerdown)="$event.stopPropagation()"
+                  >
+                    <svg class="h-2 w-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                      <path d="M5 12.5l4.2 4.2L19 7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="note-icon-btn is-delete"
+                    title="Eliminar"
+                    (click)="discard(note); $event.stopPropagation()"
+                    (pointerdown)="$event.stopPropagation()"
+                  >
+                    <svg class="h-2 w-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                      <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                }
               </div>
             </div>
             <input
@@ -308,6 +362,7 @@ type NoteMark = {
               placeholder="Título (opcional)"
               maxlength="120"
               autocomplete="off"
+              [readonly]="!canEdit(note)"
             />
             @if (note.recording_id) {
               <div
@@ -377,6 +432,7 @@ type NoteMark = {
                   (ngModelChange)="setText(note, $event)"
                   (blur)="save(note)"
                   placeholder="Escribe, pega o arrastra una imagen…"
+                  [readonly]="!canEdit(note)"
                 ></textarea>
                 @for (image of imagesOf(note); track image.id) {
                   <div
@@ -447,6 +503,32 @@ type NoteMark = {
                 </button>
               }
             </div>
+            @if (canShare(note)) {
+              <div class="note-share-wrap">
+                <button
+                  type="button"
+                  class="note-share-btn"
+                  [attr.id]="'note-share-' + note.id"
+                  [class.is-on]="noteFlyout()?.kind === 'share' && noteFlyout()?.noteId === note.id"
+                  [class.has-people]="(note.share_count || 0) > 0"
+                  title="Compartir"
+                  (click)="toggleSharePanel(note); $event.stopPropagation()"
+                  (pointerdown)="$event.stopPropagation()"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="18" cy="5" r="3"/>
+                    <circle cx="6" cy="12" r="3"/>
+                    <circle cx="18" cy="19" r="3"/>
+                    <path d="M8.6 13.5 15.4 17.5M15.4 6.5 8.6 10.5"/>
+                  </svg>
+                </button>
+              </div>
+            }
+            @if (!isOwner(note)) {
+              <span class="note-shared-tag" [title]="note.owner_name ? 'De ' + note.owner_name : 'Nota compartida'">
+                {{ note.access === 'write' ? 'Editar' : 'Leer' }}
+              </span>
+            }
             <span
               class="note-resize"
               title="Redimensionar"
@@ -488,22 +570,24 @@ type NoteMark = {
 
       @if (ghost(); as g) {
         <div
-          class="sticky-paper pointer-events-none fixed z-50 h-[176px] w-[156px] rounded-[3px] opacity-90 shadow-sticky"
-          [style.left.px]="g.x"
-          [style.top.px]="g.y"
-          style="transform: rotate(-6deg) scale(0.92)"
+          class="sticky-paper is-pad-ghost pointer-events-none fixed z-50 rounded-[3px] opacity-95 shadow-sticky"
+          [style.width.px]="noteW"
+          [style.height.px]="noteH"
+          [style.transform]="'translate3d(' + g.x + 'px,' + g.y + 'px,0)'"
         >
           <div class="sticky-tape mx-auto mt-3 h-4 w-16 rounded-sm"></div>
         </div>
       }
 
-      <div class="absolute bottom-7 left-1/2 z-40 flex -translate-x-1/2 items-end gap-6">
+      <div class="absolute bottom-7 left-1/2 z-[88] flex -translate-x-1/2 items-end gap-6">
         @if (canCreateNotes()) {
           <div class="flex flex-col items-center">
             <div
               class="note-pad group relative h-[68px] w-[62px] cursor-grab touch-none active:cursor-grabbing"
               [class.is-held]="draggingPad()"
               (pointerdown)="startPadDrag($event)"
+              (pointerup)="endPadDrag()"
+              (pointercancel)="endPadDrag()"
               role="button"
               tabindex="0"
               aria-label="Arrastrar una nota amarilla al tablero"
@@ -519,7 +603,7 @@ type NoteMark = {
             <p
               class="mt-3 rounded-full bg-black/35 px-3 py-1 text-[11px] uppercase tracking-[0.22em] text-[#f8ecd4]/80 backdrop-blur"
             >
-              {{ isToday() ? 'Arrastra al tablero' : 'Nota para esta fecha' }}
+              {{ isToday() ? t('board.drag') : t('board.forDate') }}
             </p>
           </div>
         }
@@ -826,6 +910,7 @@ type NoteMark = {
                 placeholder="Título (opcional)"
                 maxlength="120"
                 autocomplete="off"
+                [readonly]="!canEdit(note)"
               />
               <div class="flex shrink-0 items-center gap-0.5">
                 <button
@@ -842,26 +927,28 @@ type NoteMark = {
                     }
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  class="note-icon-btn is-done"
-                  title="Hecho"
-                  (click)="markDone(note)"
-                >
-                  <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-                    <path d="M5 12.5l4.2 4.2L19 7" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  class="note-icon-btn is-delete"
-                  title="Eliminar"
-                  (click)="discard(note)"
-                >
-                  <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-                    <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
-                  </svg>
-                </button>
+                @if (isOwner(note)) {
+                  <button
+                    type="button"
+                    class="note-icon-btn is-done"
+                    title="Hecho"
+                    (click)="markDone(note)"
+                  >
+                    <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                      <path d="M5 12.5l4.2 4.2L19 7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="note-icon-btn is-delete"
+                    title="Eliminar"
+                    (click)="discard(note)"
+                  >
+                    <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                      <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                }
               </div>
             </div>
             @if (note.recording_id) {
@@ -913,6 +1000,7 @@ type NoteMark = {
                   (ngModelChange)="setText(note, $event)"
                   (blur)="save(note)"
                   placeholder="Escribe, pega o arrastra una imagen…"
+                  [readonly]="!canEdit(note)"
                 ></textarea>
                 @for (image of imagesOf(note); track image.id) {
                   <div
@@ -1092,6 +1180,27 @@ type NoteMark = {
                 <div class="note-drop-hint">Suelta la imagen</div>
               }
             </div>
+            @if (canShare(note)) {
+              <div class="note-share-wrap is-expanded">
+                <button
+                  type="button"
+                  class="note-share-btn"
+                  [attr.id]="'note-share-exp-' + note.id"
+                  [class.is-on]="noteFlyout()?.kind === 'share' && noteFlyout()?.noteId === note.id"
+                  [class.has-people]="(note.share_count || 0) > 0"
+                  title="Compartir"
+                  (click)="toggleSharePanel(note, true); $event.stopPropagation()"
+                  (pointerdown)="$event.stopPropagation()"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="18" cy="5" r="3"/>
+                    <circle cx="6" cy="12" r="3"/>
+                    <circle cx="18" cy="19" r="3"/>
+                    <path d="M8.6 13.5 15.4 17.5M15.4 6.5 8.6 10.5"/>
+                  </svg>
+                </button>
+              </div>
+            }
           </article>
         </div>
       }
@@ -1162,6 +1271,7 @@ type NoteMark = {
             [class.is-color]="panel.kind === 'color'"
             [class.is-remind]="panel.kind === 'remind'"
             [class.is-date]="panel.kind === 'date'"
+            [class.is-share]="panel.kind === 'share'"
             [style.left.px]="panel.x"
             [style.top.px]="panel.y"
             (pointerdown)="$event.stopPropagation()"
@@ -1188,11 +1298,11 @@ type NoteMark = {
                 <div>
                   <div class="remind-cal-nav">
                     <button type="button" class="cal-nav" (click)="shiftRemindMonth(-1)" aria-label="Mes anterior">‹</button>
-                    <p>{{ monthNames[draft.month] }} {{ draft.year }}</p>
+                    <p>{{ monthNames()[draft.month] }} {{ draft.year }}</p>
                     <button type="button" class="cal-nav" (click)="shiftRemindMonth(1)" aria-label="Mes siguiente">›</button>
                   </div>
                   <div class="remind-cal-week">
-                    @for (day of weekDays; track day) {
+                    @for (day of weekDays(); track $index) {
                       <span>{{ day }}</span>
                     }
                   </div>
@@ -1296,12 +1406,12 @@ type NoteMark = {
               <div class="remind-cal-nav">
                 <button type="button" class="cal-nav" (click)="shiftMoveYear(-1)" aria-label="Año anterior">«</button>
                 <button type="button" class="cal-nav" (click)="shiftMoveMonth(-1)" aria-label="Mes anterior">‹</button>
-                <p>{{ monthNames[draft.month] }} {{ draft.year }}</p>
+                <p>{{ monthNames()[draft.month] }} {{ draft.year }}</p>
                 <button type="button" class="cal-nav" (click)="shiftMoveMonth(1)" aria-label="Mes siguiente">›</button>
                 <button type="button" class="cal-nav" (click)="shiftMoveYear(1)" aria-label="Año siguiente">»</button>
               </div>
               <div class="remind-cal-week">
-                @for (day of weekDays; track day) {
+                @for (day of weekDays(); track $index) {
                   <span>{{ day }}</span>
                 }
               </div>
@@ -1325,6 +1435,76 @@ type NoteMark = {
                 }
               </div>
               <p class="note-flyout-hint">Elige un día de hoy en adelante. La nota saldrá de este tablero.</p>
+            }
+            @if (panel.kind === 'share') {
+              <p class="note-flyout-kicker">Compartir nota</p>
+              <label class="note-share-field">
+                <span>Nombre o correo</span>
+                <input
+                  type="text"
+                  [ngModel]="shareQuery()"
+                  (ngModelChange)="shareQuery.set($event)"
+                  (keydown.enter)="submitShare(note); $event.preventDefault()"
+                  placeholder="ana o ana@correo.com"
+                  autocomplete="off"
+                />
+              </label>
+              <div class="note-share-perms">
+                <label>
+                  <input
+                    type="checkbox"
+                    [checked]="shareCanRead()"
+                    (change)="setShareDraftRead($event)"
+                  />
+                  Lectura
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    [checked]="shareCanWrite()"
+                    (change)="setShareDraftWrite($event)"
+                  />
+                  Escritura
+                </label>
+              </div>
+              @if (shareError()) {
+                <p class="note-share-error">{{ shareError() }}</p>
+              }
+              <div class="note-flyout-actions">
+                <button type="button" class="is-save" [disabled]="shareBusy()" (click)="submitShare(note)">
+                  {{ shareBusy() ? 'Un segundo…' : 'Compartir' }}
+                </button>
+              </div>
+              @if (shares().length) {
+                <p class="note-flyout-kicker note-share-people">Personas</p>
+                <div class="note-share-list">
+                  @for (person of shares(); track person.id) {
+                    <div class="note-share-row">
+                      <div>
+                        <strong>{{ person.name || person.email }}</strong>
+                        <em>{{ person.email }}</em>
+                      </div>
+                      <label title="Lectura">
+                        <input
+                          type="checkbox"
+                          [checked]="person.can_read || person.can_write"
+                          (change)="setSharePerm(note, person, 'read', $event)"
+                        />
+                        L
+                      </label>
+                      <label title="Escritura">
+                        <input
+                          type="checkbox"
+                          [checked]="person.can_write"
+                          (change)="setSharePerm(note, person, 'write', $event)"
+                        />
+                        E
+                      </label>
+                      <button type="button" title="Dejar de compartir" (click)="removeShare(note, person)">×</button>
+                    </div>
+                  }
+                </div>
+              }
             }
           </div>
         }
@@ -1429,6 +1609,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private readonly notesApi = inject(NotesService);
   private readonly liveCapture = inject(LiveCaptureService);
   private readonly recordingsApi = inject(RecordingsApi);
+  readonly auth = inject(AuthService);
+  readonly prefs = inject(PrefsService);
+  readonly accountOpen = signal(false);
   @ViewChild('stage') private stage?: ElementRef<HTMLElement>;
   @ViewChild('trashDock') private trashDock?: ElementRef<HTMLElement>;
   @ViewChild('doneDock') private doneDock?: ElementRef<HTMLElement>;
@@ -1471,7 +1654,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const seconds = String(total % 60).padStart(2, '0');
     return `${minutes}:${seconds}`;
   });
-  private padPointer: { x: number; y: number } | null = null;
+  private padPointer: { x: number; y: number; dx: number; dy: number } | null = null;
   readonly activeId = signal<string | null>(null);
   readonly draggingNoteId = signal<string | null>(null);
   readonly trashOpen = signal(false);
@@ -1484,27 +1667,20 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   readonly calendarOpen = signal(false);
   readonly viewYear = signal(new Date().getFullYear());
   readonly viewMonth = signal(new Date().getMonth());
-  readonly weekDays = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
-  readonly monthNames = [
-    'Enero',
-    'Febrero',
-    'Marzo',
-    'Abril',
-    'Mayo',
-    'Junio',
-    'Julio',
-    'Agosto',
-    'Septiembre',
-    'Octubre',
-    'Noviembre',
-    'Diciembre',
-  ];
+  readonly weekDays = computed(() =>
+    this.prefs.lang() === 'en' ? ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'] : ['L', 'M', 'X', 'J', 'V', 'S', 'D'],
+  );
+  readonly monthNames = computed(() =>
+    this.prefs.lang() === 'en'
+      ? ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+      : ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'],
+  );
   readonly todayKey = signal(BoardPage.localDayKey());
   readonly isToday = computed(() => this.selectedDay() === this.todayKey());
   readonly canCreateNotes = computed(() => this.selectedDay() >= this.todayKey());
   readonly dateLabel = computed(() => {
     const date = BoardPage.parseDayKey(this.selectedDay());
-    const formatted = date.toLocaleDateString('es-ES', {
+    const formatted = date.toLocaleDateString(this.prefs.locale(), {
       weekday: 'short',
       day: 'numeric',
       month: 'short',
@@ -1678,17 +1854,25 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   readonly clockHours = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
   readonly clockMinutes = [0, 15, 30, 45];
   readonly sparkIndex = [0, 1, 2, 3, 4, 5];
+  readonly noteW = NOTE_W;
+  readonly noteH = NOTE_H;
   readonly spawning = signal<Record<string, number>>({});
   readonly spawnRun = signal<Record<string, boolean>>({});
   readonly spawnBursts = signal<Array<{ id: string; noteId: string; x: number; y: number; w: number; h: number; hex: string }>>([]);
   readonly noteFlyout = signal<{
-    kind: 'color' | 'remind' | 'date';
+    kind: 'color' | 'remind' | 'date' | 'share';
     noteId: string;
     x: number;
     y: number;
     side: 'left' | 'right';
     expanded: boolean;
   } | null>(null);
+  readonly shares = signal<NoteShare[]>([]);
+  readonly shareQuery = signal('');
+  readonly shareCanRead = signal(true);
+  readonly shareCanWrite = signal(false);
+  readonly shareBusy = signal(false);
+  readonly shareError = signal('');
   readonly dateDraft = signal<{ year: number; month: number } | null>(null);
   readonly dateCatching = signal(false);
   readonly remindDraft = signal<{
@@ -1872,7 +2056,8 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     void this.ensureAudio()?.resume();
     const target = event.target as HTMLElement | null;
     if (this.calendarOpen() && !target?.closest('.date-filter')) this.calendarOpen.set(false);
-    if (!target?.closest('.note-flyout, .note-color-wrap, .note-remind-wrap, .note-date-wrap')) {
+    if (this.accountOpen() && !target?.closest('.account-wrap')) this.accountOpen.set(false);
+    if (!target?.closest('.note-flyout, .note-color-wrap, .note-remind-wrap, .note-date-wrap, .note-share-wrap')) {
       this.closeNoteFlyout();
     }
   }
@@ -2125,10 +2310,25 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   startPadDrag(event: PointerEvent): void {
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     this.draggingPad.set(true);
-    this.padPointer = { x: event.clientX, y: event.clientY };
+    const pad = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const originX = pad.left + pad.width / 2 - NOTE_W / 2;
+    const originY = pad.top + pad.height / 2 - NOTE_H / 2;
+    this.padPointer = {
+      x: event.clientX,
+      y: event.clientY,
+      dx: event.clientX - originX,
+      dy: event.clientY - originY,
+    };
+  }
+
+  endPadDrag(): void {
+    if (!this.draggingPad()) return;
+    this.dropPad();
   }
 
   async startCallCapture(internalAudio = false): Promise<void> {
@@ -2238,6 +2438,35 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private armCallClock(): void {
     if (this.callTimer) clearInterval(this.callTimer);
     this.callTimer = setInterval(() => this.callTick.update((value) => value + 1), 250);
+  }
+
+  t(key: string): string {
+    return this.prefs.t(key);
+  }
+
+  initials(): string {
+    const user = this.auth.user();
+    const source = (user?.name || user?.email || 'M').trim();
+    const parts = source.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    const token = parts[0] ?? 'M';
+    if (token.includes('@')) return token[0].toUpperCase();
+    return token.slice(0, 2).toUpperCase();
+  }
+
+  displayName(): string {
+    const user = this.auth.user();
+    return user?.name?.trim() || user?.email || 'Meeter';
+  }
+
+  toggleAccount(event: Event): void {
+    event.stopPropagation();
+    this.accountOpen.update((open) => !open);
+  }
+
+  logout(): void {
+    this.accountOpen.set(false);
+    this.auth.logout();
   }
 
   clippyTap(): void {
@@ -2472,6 +2701,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   startMove(event: PointerEvent, note: Note): void {
+    if (!this.canEdit(note)) return;
     event.preventDefault();
     event.stopPropagation();
     this.bringForward(note);
@@ -2485,6 +2715,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   startNoteResize(event: PointerEvent, note: Note): void {
+    if (!this.canEdit(note)) return;
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -2509,7 +2740,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     if (
       (w === 248 && h === 280) ||
       (w === 208 && h === 236) ||
-      (w === 176 && h === 198)
+      (w === 176 && h === 198) ||
+      (w === 156 && h === 176) ||
+      (w === 164 && h === 185)
     ) {
       return { w: NOTE_W, h: NOTE_H };
     }
@@ -2634,8 +2867,8 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       event.preventDefault();
       const origin = this.padPointer;
       if (!origin) return;
-      if (!this.ghost() && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) < 16) return;
-      this.ghost.set({ x: event.clientX - 124, y: event.clientY - 40 });
+      if (!this.ghost() && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) < 8) return;
+      this.ghost.set({ x: event.clientX - origin.dx, y: event.clientY - origin.dy });
       return;
     }
     if (!this.moving || !this.stage) return;
@@ -2745,6 +2978,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   setNoteColor(note: Note, color: string): void {
+    if (!this.canEdit(note)) return;
     note.color = color;
     this.patchNote(note.id, { color });
     this.notes.update((items) => [...items]);
@@ -2759,7 +2993,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.toggleNoteFlyout(note, 'date', expanded);
   }
 
-  private toggleNoteFlyout(note: Note, kind: 'color' | 'remind' | 'date', expanded: boolean): void {
+  private toggleNoteFlyout(note: Note, kind: 'color' | 'remind' | 'date' | 'share', expanded: boolean): void {
     const current = this.noteFlyout();
     if (current?.kind === kind && current.noteId === note.id) {
       this.closeNoteFlyout();
@@ -2767,8 +3001,8 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     }
     if (kind === 'remind') this.initRemindDraft(note);
     if (kind === 'date') this.initDateDraft();
-    const width = kind === 'remind' ? 268 : kind === 'date' ? 196 : 156;
-    const height = kind === 'remind' ? 348 : kind === 'date' ? 228 : 196;
+    const width = kind === 'remind' ? 268 : kind === 'date' ? 196 : kind === 'share' ? 236 : 156;
+    const height = kind === 'remind' ? 348 : kind === 'date' ? 228 : kind === 'share' ? 220 : 196;
     const rect =
       (expanded
         ? document.querySelector('.note-expanded')?.getBoundingClientRect()
@@ -2787,6 +3021,136 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.noteFlyout.set(null);
     this.remindDraft.set(null);
     this.dateDraft.set(null);
+    this.shareError.set('');
+  }
+
+  isOwner(note: Note): boolean {
+    return note.access !== 'read' && note.access !== 'write';
+  }
+
+  canEdit(note: Note): boolean {
+    return note.access !== 'read';
+  }
+
+  canShare(note: Note): boolean {
+    return this.isOwner(note) && !note.archived;
+  }
+
+  toggleSharePanel(note: Note, expanded = false): void {
+    if (!this.canShare(note)) return;
+    const current = this.noteFlyout();
+    if (current?.kind === 'share' && current.noteId === note.id) {
+      this.closeNoteFlyout();
+      return;
+    }
+    this.shareQuery.set('');
+    this.shareCanRead.set(true);
+    this.shareCanWrite.set(false);
+    this.shareError.set('');
+    this.shares.set([]);
+    this.toggleNoteFlyout(note, 'share', expanded);
+    if (note.id.startsWith('local-')) {
+      this.shareError.set('Espera a que se guarde la nota para compartirla.');
+      return;
+    }
+    this.notesApi.listShares(note.id).subscribe({
+      next: (people) => this.shares.set(people),
+      error: (err: HttpErrorResponse) => {
+        this.shareError.set(this.shareFailMessage(err, 'No se pudieron cargar las personas.'));
+      },
+    });
+  }
+
+  setShareDraftRead(event: Event): void {
+    const on = (event.target as HTMLInputElement).checked;
+    if (!on && this.shareCanWrite()) {
+      this.shareCanRead.set(true);
+      return;
+    }
+    this.shareCanRead.set(on);
+  }
+
+  setShareDraftWrite(event: Event): void {
+    const on = (event.target as HTMLInputElement).checked;
+    this.shareCanWrite.set(on);
+    if (on) this.shareCanRead.set(true);
+  }
+
+  submitShare(note: Note): void {
+    if (this.shareBusy() || !this.canShare(note) || note.id.startsWith('local-')) return;
+    const identifier = this.shareQuery().trim();
+    if (!identifier) {
+      this.shareError.set('Escribe un nombre o correo.');
+      return;
+    }
+    if (!this.shareCanRead() && !this.shareCanWrite()) {
+      this.shareError.set('Elige al menos lectura o escritura.');
+      return;
+    }
+    this.shareBusy.set(true);
+    this.shareError.set('');
+    this.notesApi
+      .share(note.id, {
+        identifier,
+        can_read: this.shareCanRead() || this.shareCanWrite(),
+        can_write: this.shareCanWrite(),
+      })
+      .subscribe({
+        next: (person) => {
+          this.shareBusy.set(false);
+          this.shareQuery.set('');
+          this.shares.update((people) => {
+            const rest = people.filter((item) => item.id !== person.id && item.user_id !== person.user_id);
+            return [...rest, person];
+          });
+          this.bumpShareCount(note.id, this.shares().length);
+        },
+        error: (err: HttpErrorResponse) => {
+          this.shareBusy.set(false);
+          this.shareError.set(this.shareFailMessage(err, 'No se pudo compartir la nota.'));
+        },
+      });
+  }
+
+  setSharePerm(note: Note, person: NoteShare, kind: 'read' | 'write', event: Event): void {
+    const on = (event.target as HTMLInputElement).checked;
+    const can_write = kind === 'write' ? on : person.can_write;
+    const can_read = kind === 'read' ? on || can_write : person.can_read || can_write;
+    if (!can_read && !can_write) {
+      this.removeShare(note, person);
+      return;
+    }
+    this.notesApi.updateShare(note.id, person.id, { can_read, can_write }).subscribe({
+      next: (saved) => {
+        this.shares.update((people) => people.map((item) => (item.id === saved.id ? saved : item)));
+      },
+      error: (err: HttpErrorResponse) => {
+        this.shareError.set(this.shareFailMessage(err, 'No se pudieron guardar los permisos.'));
+      },
+    });
+  }
+
+  removeShare(note: Note, person: NoteShare): void {
+    this.notesApi.unshare(note.id, person.id).subscribe({
+      next: () => {
+        this.shares.update((people) => people.filter((item) => item.id !== person.id));
+        this.bumpShareCount(note.id, this.shares().length);
+      },
+      error: (err: HttpErrorResponse) => {
+        this.shareError.set(this.shareFailMessage(err, 'No se pudo dejar de compartir.'));
+      },
+    });
+  }
+
+  private bumpShareCount(noteId: string, count: number): void {
+    this.notes.update((items) =>
+      items.map((note) => (note.id === noteId ? { ...note, share_count: count } : note)),
+    );
+  }
+
+  private shareFailMessage(err: HttpErrorResponse, fallback: string): string {
+    const detail = err.error?.detail;
+    return typeof detail === 'string' && detail.trim() ? detail : fallback;
   }
 
   private initDateDraft(): void {
@@ -2810,6 +3174,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   moveNoteToDate(note: Note, key: string): void {
+    if (!this.canEdit(note)) return;
     if (key < this.todayKey()) return;
     if (this.dayKey(note.created_at) === key) {
       this.closeNoteFlyout();
@@ -2883,7 +3248,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const date = new Date(draft.year, draft.month, draft.day, draft.hour, draft.minute, 0, 0);
     const today = BoardPage.localDayKey();
     const key = BoardPage.localDayKey(date);
-    const when = key === today ? 'Hoy' : `${draft.day} ${this.monthNames[draft.month]}`;
+    const when = key === today ? this.t('board.today') : `${draft.day} ${this.monthNames()[draft.month]}`;
     const suffix = date.getTime() <= Date.now() ? ' · suena ahora' : '';
     return `${when} a las ${this.remindClockLabel()}${suffix}`;
   }
@@ -2971,6 +3336,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   saveReminderDraft(note: Note): void {
+    if (!this.canEdit(note)) return;
     const draft = this.remindDraft();
     if (!draft) return;
     const date = new Date(draft.year, draft.month, draft.day, draft.hour, draft.minute, 0, 0);
@@ -3411,6 +3777,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   onNoteDragOver(event: DragEvent, note: Note): void {
+    if (!this.canEdit(note)) return;
     const types = [...(event.dataTransfer?.types ?? [])];
     if (!types.includes('Files')) return;
     event.preventDefault();
@@ -3420,6 +3787,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   onNoteDrop(event: DragEvent, note: Note): void {
+    if (!this.canEdit(note)) return;
     event.preventDefault();
     event.stopPropagation();
     this.dropTargetId.set(null);
@@ -3521,7 +3889,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const files = this.clipboardImages(event);
     if (!files.length) return;
     const note = this.expandedNote() ?? this.notes().find((item) => item.id === this.activeId());
-    if (!note || note.archived || note.pinned) return;
+    if (!note || note.archived || note.pinned || !this.canEdit(note)) return;
     event.preventDefault();
     void this.addImageFiles(note, files);
   }
@@ -3639,6 +4007,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   @HostListener('document:pointerup')
+  @HostListener('document:pointercancel')
   onUp(): void {
     if (this.clockDrag()) {
       this.clockDrag.set(null);
@@ -3720,7 +4089,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       return;
     }
     if (this.draggingPad()) {
-      this.dropPad();
+      this.endPadDrag();
       return;
     }
     if (this.resizingNote) {
@@ -3744,6 +4113,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   setPriority(note: Note, priority: number): void {
+    if (!this.canEdit(note)) return;
     if (note.priority === priority) {
       this.arrangeByPriority(note.id);
       return;
@@ -3757,6 +4127,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   markDone(note: Note): void {
+    if (!this.isOwner(note)) return;
     if (this.voiceNoteId() === note.id) this.stopVoice();
     if (this.expandedId() === note.id) this.closeExpanded(false);
     this.launchTowardDone(note);
@@ -3769,6 +4140,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   discard(note: Note): void {
+    if (!this.isOwner(note)) return;
     if (this.voiceNoteId() === note.id) this.stopVoice();
     const from = this.discardOrigin(note) ?? this.fallbackNoteRect(note);
     if (this.expandedId() === note.id) {
@@ -4137,6 +4509,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   save(note: Note): void {
+    if (!this.canEdit(note)) return;
     note.title = (note.title ?? '').trim();
     this.patchNote(note.id, {
       title: note.title,
@@ -4197,7 +4570,11 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     for (const level of this.priorities) {
       const group = this.notes().filter(
         (note) =>
-          !note.archived && !note.pinned && (note.priority || 1) === level && this.matchesDay(note, 'board'),
+          this.isOwner(note) &&
+          !note.archived &&
+          !note.pinned &&
+          (note.priority || 1) === level &&
+          this.matchesDay(note, 'board'),
       );
       if (!group.length) continue;
       group.sort((a, b) => {
@@ -4215,7 +4592,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.notes.update((items) => [...items]);
     if (persist) {
       for (const note of this.notes()) {
-        if (note.archived || note.id.startsWith('local-')) continue;
+        if (note.archived || note.id.startsWith('local-') || !this.canEdit(note)) continue;
         const moved = previous.get(note.id) !== `${note.pos_x},${note.pos_y}`;
         if (moved || note.id === movedId) this.patchNote(note.id, { pos_x: note.pos_x, pos_y: note.pos_y });
       }
@@ -4223,7 +4600,19 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.scheduleCache();
   }
 
+  private newNoteId(): string {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+    } catch {
+      /* HTTP en la red local no es un contexto seguro. */
+    }
+    return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+
   private dropPad(): void {
+    if (!this.draggingPad() && !this.padPointer) return;
     const ghost = this.ghost();
     this.draggingPad.set(false);
     this.ghost.set(null);
@@ -4231,16 +4620,17 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const stageEl = this.stage?.nativeElement;
     if (!stageEl) return;
     const board = stageEl.getBoundingClientRect();
+    const dragged = Boolean(ghost);
     const pos_x = ghost
-      ? Math.min(Math.max(16, ghost.x - board.left), Math.max(16, board.width - 260))
+      ? Math.round(Math.max(8, ghost.x - board.left + stageEl.scrollLeft))
       : 36;
     const pos_y = ghost
-      ? Math.min(Math.max(16, ghost.y - board.top), Math.max(16, board.height - 300))
+      ? Math.round(Math.max(8, ghost.y - board.top + stageEl.scrollTop))
       : 132;
     const rotation = Math.round((Math.random() * 10 - 5) * 10) / 10;
     const createdAt = this.timestampForSelectedDay();
     const local: Note = {
-      id: `local-${crypto.randomUUID()}`,
+      id: `local-${this.newNoteId()}`,
       title: '',
       body: '',
       color: 'yellow',
@@ -4260,12 +4650,12 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       updated_at: createdAt,
     };
     this.seenNoteIds?.add(local.id);
-    this.revealNote(local);
+    if (!dragged) this.revealNote(local);
     this.notes.update((items) => [...items, local]);
     this.bringForward(local);
-    this.arrangeByPriority(local.id);
+    if (!dragged) this.arrangeByPriority(local.id);
     const placed = this.notes().find((item) => item.id === local.id) ?? local;
-    window.setTimeout(() => document.getElementById(`note-body-${local.id}`)?.focus(), 920);
+    window.setTimeout(() => document.getElementById(`note-body-${local.id}`)?.focus(), dragged ? 40 : 920);
     this.notesApi
       .create({
         title: '',
@@ -4350,6 +4740,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       reminder_at: note.reminder_at ?? null,
       alarm_tone: this.toneOf(note),
       reminder_silenced: Boolean(note.reminder_silenced),
+      access: note.access === 'read' || note.access === 'write' ? note.access : 'owner',
+      owner_name: note.owner_name ?? null,
+      share_count: note.share_count ?? 0,
     };
   }
 }

@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
 import { ApiClient } from './api.client';
-import { Note } from './models';
+import { Note, NoteShare } from './models';
 
 @Injectable({ providedIn: 'root' })
 export class NotesService {
@@ -34,5 +34,28 @@ export class NotesService {
 
   remove(id: string): Observable<{ detail: string }> {
     return this.api.delete(`/api/notes/${id}`);
+  }
+
+  listShares(noteId: string): Observable<NoteShare[]> {
+    return this.api.get<NoteShare[]>(`/api/notes/${noteId}/shares`);
+  }
+
+  share(
+    noteId: string,
+    payload: { identifier: string; can_read: boolean; can_write: boolean },
+  ): Observable<NoteShare> {
+    return this.api.post<NoteShare>(`/api/notes/${noteId}/shares`, payload);
+  }
+
+  updateShare(
+    noteId: string,
+    shareId: string,
+    payload: { can_read?: boolean; can_write?: boolean },
+  ): Observable<NoteShare> {
+    return this.api.patch<NoteShare>(`/api/notes/${noteId}/shares/${shareId}`, payload);
+  }
+
+  unshare(noteId: string, shareId: string): Observable<{ detail: string }> {
+    return this.api.delete(`/api/notes/${noteId}/shares/${shareId}`);
   }
 }

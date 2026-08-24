@@ -8,6 +8,7 @@ from app.api.main import create_app
 from app.application.services.action_item_service import ActionItemService
 from app.application.services.agenda_service import AgendaService
 from app.application.services.analysis_service import AIAnalysisService
+from app.application.services.auth_service import AuthService
 from app.application.services.dashboard_service import DashboardService
 from app.application.services.export_service import ExportService
 from app.application.services.note_service import NoteService
@@ -22,6 +23,20 @@ from app.infrastructure.audio.recorder import RecordingResult
 from app.infrastructure.audio.wav_writer import write_silence_wav
 from app.infrastructure.database.session import create_engine_from_settings, init_database, make_session_factory
 from tests.conftest import FakeAIProvider, FakeDiarization, FakeTranscriptionProvider
+
+
+def _auth_headers(client: TestClient) -> dict[str, str]:
+    created = client.post(
+        "/api/auth/register",
+        json={"email": "ana@meeter.test", "password": "secret123", "name": "Ana"},
+    )
+    if created.status_code == 201:
+        token = created.json()["token"]
+    else:
+        login = client.post("/api/auth/login", json={"email": "ana@meeter.test", "password": "secret123"})
+        token = login.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
 
 
 def _container(settings: Settings, uow_factory) -> AppContainer:
@@ -45,6 +60,7 @@ def _container(settings: Settings, uow_factory) -> AppContainer:
         exports=ExportService(settings),
         search=SearchService(uow_factory),
         dashboard=DashboardService(uow_factory),
+        auth=AuthService(make_session_factory(engine)),
         uow_factory=uow_factory,
     )
 
@@ -115,6 +131,7 @@ def test_from_call_creates_summary_note(uow_factory, settings: Settings) -> None
     client = TestClient(create_app(container))
     created = client.post(
         "/api/notes/from-call",
+        headers=_auth_headers(client),
         json={
             "transcript": "Hablamos del presupuesto. Acordamos enviar la propuesta el lunes. Hay que llamar a Ana.",
             "pos_x": 40,
@@ -125,7 +142,7 @@ def test_from_call_creates_summary_note(uow_factory, settings: Settings) -> None
     body = created.json()
     assert body["body"]
     assert "presupuesto" in body["body"].lower() or "migration" in body["body"].lower() or body["title"]
-    listed = client.get("/api/notes")
+    listed = client.get("/api/notes", headers=_auth_headers(client))
     assert any(note["id"] == body["id"] for note in listed.json())
     container = _container(settings, uow_factory)
     wav = settings.recordings_path / "phone.wav"

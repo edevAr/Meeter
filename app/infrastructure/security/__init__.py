@@ -5,7 +5,21 @@ from app.infrastructure.security.files import (
     sanitize_filename,
     validate_audio_path,
 )
+from app.infrastructure.security.passwords import hash_password, hash_token, verify_password
 from app.infrastructure.security.secrets import mask_secret, read_api_key
+
+__all__ = [
+    "FileValidationError",
+    "delete_file_quietly",
+    "hash_password",
+    "hash_token",
+    "mask_secret",
+    "read_api_key",
+    "safe_join",
+    "sanitize_filename",
+    "validate_audio_path",
+    "verify_password",
+]
 
 __all__ = [
     "FileValidationError",

@@ -16,7 +16,7 @@ from app.domain.interfaces.repositories import (
 from app.domain.models.action_item import ActionItem
 from app.domain.models.analysis import Decision, KeyTopic, MeetingAnalysis
 from app.domain.models.enums import ActionItemPriority, ActionItemStatus, AudioSourceType, RecordingStatus
-from app.domain.models.note import Note
+from app.domain.models.note import Note, NoteShare
 from app.domain.models.recording import Recording
 from app.domain.models.task import Task
 from app.domain.models.transcript import Transcript, TranscriptSegment
@@ -25,11 +25,13 @@ from app.infrastructure.database.models import (
     AnalysisRow,
     DecisionRow,
     NoteRow,
+    NoteShareRow,
     RecordingRow,
     TaskRow,
     TopicRow,
     TranscriptRow,
     TranscriptSegmentRow,
+    UserRow,
 )
 from app.infrastructure.database.session import SessionFactory
 
@@ -443,8 +445,22 @@ def note_from_row(row: NoteRow) -> Note:
         reminder_at=_aware(getattr(row, "reminder_at", None)) if getattr(row, "reminder_at", None) else None,
         alarm_tone=getattr(row, "alarm_tone", None) or "classic",
         reminder_silenced=bool(getattr(row, "reminder_silenced", False)),
+        user_id=getattr(row, "user_id", None),
         created_at=_aware(row.created_at),  # type: ignore[arg-type]
         updated_at=_aware(row.updated_at),  # type: ignore[arg-type]
+    )
+
+
+def share_from_row(row: NoteShareRow, user: UserRow | None = None) -> NoteShare:
+    return NoteShare(
+        id=row.id,
+        note_id=row.note_id,
+        user_id=row.user_id,
+        can_read=bool(row.can_read) or bool(row.can_write),
+        can_write=bool(row.can_write),
+        created_at=_aware(row.created_at),  # type: ignore[arg-type]
+        name=(user.name if user else "") or "",
+        email=(user.email if user else "") or "",
     )
 
 
@@ -487,6 +503,7 @@ class SqlAlchemyNoteRepository:
                 reminder_at=note.reminder_at,
                 alarm_tone=note.alarm_tone,
                 reminder_silenced=bool(note.reminder_silenced),
+                user_id=note.user_id,
                 created_at=note.created_at,
                 updated_at=note.updated_at,
             )
@@ -498,12 +515,18 @@ class SqlAlchemyNoteRepository:
         row = self._session.get(NoteRow, note_id)
         return note_from_row(row) if row else None
 
-    def list(self, archived: bool = False) -> list[Note]:
-        stmt = (
-            select(NoteRow)
-            .where(NoteRow.archived.is_(archived))
-            .order_by(NoteRow.pinned.desc(), NoteRow.updated_at.desc())
-        )
+    def list(self, archived: bool = False, user_id: str | None = None) -> list[Note]:
+        stmt = select(NoteRow).where(NoteRow.archived.is_(archived))
+        if user_id:
+            if archived:
+                stmt = stmt.where(NoteRow.user_id == user_id)
+            else:
+                shared_ids = select(NoteShareRow.note_id).where(
+                    NoteShareRow.user_id == user_id,
+                    or_(NoteShareRow.can_read.is_(True), NoteShareRow.can_write.is_(True)),
+                )
+                stmt = stmt.where(or_(NoteRow.user_id == user_id, NoteRow.id.in_(shared_ids)))
+        stmt = stmt.order_by(NoteRow.pinned.desc(), NoteRow.updated_at.desc())
         return [note_from_row(row) for row in self._session.scalars(stmt)]
 
     def update(self, note: Note) -> Note:
@@ -525,6 +548,7 @@ class SqlAlchemyNoteRepository:
         row.reminder_at = note.reminder_at
         row.alarm_tone = note.alarm_tone or "classic"
         row.reminder_silenced = bool(note.reminder_silenced)
+        row.user_id = note.user_id
         row.created_at = note.created_at
         row.updated_at = note.updated_at
         self._session.flush()
@@ -541,6 +565,79 @@ class SqlAlchemyNoteRepository:
             or_(NoteRow.title.ilike(pattern), NoteRow.body.ilike(pattern))
         )
         return [note_from_row(row) for row in self._session.scalars(stmt)]
+
+    def share_for(self, note_id: str, user_id: str) -> NoteShare | None:
+        row = self._session.scalar(
+            select(NoteShareRow).where(NoteShareRow.note_id == note_id, NoteShareRow.user_id == user_id)
+        )
+        return share_from_row(row) if row else None
+
+    def shares_for_user(self, user_id: str) -> dict[str, NoteShare]:
+        rows = self._session.scalars(select(NoteShareRow).where(NoteShareRow.user_id == user_id))
+        return {row.note_id: share_from_row(row) for row in rows}
+
+    def share_counts(self, note_ids: list[str]) -> dict[str, int]:
+        if not note_ids:
+            return {}
+        rows = self._session.execute(
+            select(NoteShareRow.note_id, func.count())
+            .where(NoteShareRow.note_id.in_(note_ids))
+            .group_by(NoteShareRow.note_id)
+        )
+        return {note_id: int(count) for note_id, count in rows}
+
+    def list_shares(self, note_id: str) -> list[NoteShare]:
+        rows = list(
+            self._session.scalars(
+                select(NoteShareRow)
+                .where(NoteShareRow.note_id == note_id)
+                .order_by(NoteShareRow.created_at.asc())
+            )
+        )
+        user_ids = [row.user_id for row in rows]
+        users: dict[str, UserRow] = {}
+        if user_ids:
+            users = {
+                user.id: user
+                for user in self._session.scalars(select(UserRow).where(UserRow.id.in_(user_ids)))
+            }
+        return [share_from_row(row, users.get(row.user_id)) for row in rows]
+
+    def get_share(self, share_id: str) -> NoteShare | None:
+        row = self._session.get(NoteShareRow, share_id)
+        if row is None:
+            return None
+        user = self._session.get(UserRow, row.user_id)
+        return share_from_row(row, user)
+
+    def add_share(self, share: NoteShare) -> NoteShare:
+        self._session.add(
+            NoteShareRow(
+                id=share.id,
+                note_id=share.note_id,
+                user_id=share.user_id,
+                can_read=bool(share.can_read) or bool(share.can_write),
+                can_write=bool(share.can_write),
+                created_at=share.created_at,
+            )
+        )
+        self._session.flush()
+        return share
+
+    def update_share(self, share: NoteShare) -> NoteShare:
+        row = self._session.get(NoteShareRow, share.id)
+        if row is None:
+            raise KeyError(share.id)
+        row.can_read = bool(share.can_read) or bool(share.can_write)
+        row.can_write = bool(share.can_write)
+        self._session.flush()
+        user = self._session.get(UserRow, row.user_id)
+        return share_from_row(row, user)
+
+    def delete_share(self, share_id: str) -> None:
+        row = self._session.get(NoteShareRow, share_id)
+        if row is not None:
+            self._session.delete(row)
 
 
 class SqlAlchemyTaskRepository:

@@ -66,6 +66,7 @@ def _ensure_note_layout_columns(engine: Engine) -> None:
             "reminder_at": "DATETIME",
             "alarm_tone": "VARCHAR(32) DEFAULT 'classic'",
             "reminder_silenced": "BOOLEAN DEFAULT 0",
+            "user_id": "VARCHAR(36)",
         }
         for name, ddl in alters.items():
             if name not in existing:

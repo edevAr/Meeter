@@ -3,7 +3,7 @@ services:
     build: .
     container_name: ai-call-recorder-api
     ports:
-      - "8001:8000"
+      - "0.0.0.0:8001:8000"
     env_file:
       - path: .env
         required: false

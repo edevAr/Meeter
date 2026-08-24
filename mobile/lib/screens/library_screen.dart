@@ -6,7 +6,6 @@ import '../models.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'detail_screen.dart';
-import 'search_screen.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({super.key});
@@ -16,10 +15,11 @@ class LibraryScreen extends StatefulWidget {
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
-  final _query = TextEditingController();
   List<Recording> _items = [];
-  String _error = '';
+  Recording? _selected;
   bool _loading = true;
+  String _error = '';
+  String _query = '';
 
   @override
   void initState() {
@@ -27,16 +27,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _load();
   }
 
-  @override
-  void dispose() {
-    _query.dispose();
-    super.dispose();
-  }
-
   Future<void> _load() async {
     setState(() {
-      _error = '';
       _loading = true;
+      _error = '';
     });
     try {
       final items = await context.read<ApiClient>().listRecordings();
@@ -50,71 +44,79 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  List<Recording> get _visible {
+    if (_query.trim().isEmpty) return _items;
+    final q = _query.trim().toLowerCase();
+    return _items.where((item) => item.title.toLowerCase().contains(q)).toList();
+  }
+
+  void _open(Recording recording) {
+    if (isTablet(context)) {
+      setState(() => _selected = recording);
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => DetailScreen(recordingId: recording.id)));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final transcribed = _items
-        .where((item) => {'transcribed', 'analyzing', 'analyzed'}.contains(item.status))
-        .toList();
-    return RefreshIndicator(
-      color: kAccent,
+    final tablet = isTablet(context);
+    final list = RefreshIndicator(
+      color: kSun,
       onRefresh: _load,
       child: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: EdgeInsets.fromLTRB(pagePadding(context), 8, pagePadding(context), 24),
         children: [
-          const Text('Recordings', style: TextStyle(color: kText, fontSize: 28, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 14),
+          const PageHeader(kicker: 'Archivo', title: 'Llamadas'),
           TextField(
-            controller: _query,
-            style: const TextStyle(color: kText),
-            textInputAction: TextInputAction.search,
-            decoration: const InputDecoration(hintText: 'Search meetings, transcripts and action items...'),
-            onSubmitted: (value) {
-              if (value.trim().length >= 2) {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(builder: (_) => SearchScreen(query: value.trim())),
-                );
-              }
-            },
+            style: const TextStyle(color: kInk),
+            decoration: const InputDecoration(hintText: 'Buscar por título…', prefixIcon: Icon(Icons.search)),
+            onChanged: (value) => setState(() => _query = value),
           ),
-          if (_error.isNotEmpty) Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Text(_error, style: const TextStyle(color: kDanger)),
-          ),
-          if (_loading && _items.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(top: 24),
-              child: Center(child: CircularProgressIndicator(color: kAccent)),
-            ),
-          const SizedBox(height: 16),
-          if (_items.isEmpty && !_loading)
-            const EmptyState(
-              title: 'No recordings',
-              body: 'Record from the Record tab. Audio stays on this phone until you upload it to your API.',
-            )
-          else
-            ..._items.map(
-              (item) => RecordingCard(
-                recording: item,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(builder: (_) => DetailScreen(recordingId: item.id)),
+          const SizedBox(height: 12),
+          if (_error.isNotEmpty) Text(_error, style: const TextStyle(color: kSun, fontWeight: FontWeight.w700)),
+          if (_loading && _items.isEmpty) const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator(color: kSun))),
+          if (!_loading && _visible.isEmpty)
+            const EmptyHint(title: 'Sin llamadas', body: 'Graba desde Captura. El audio se sube a tu API y luego se transcribe.'),
+          ..._visible.map(
+            (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Material(
+                color: kPaper,
+                borderRadius: BorderRadius.circular(16),
+                child: ListTile(
+                  selected: _selected?.id == item.id,
+                  selectedTileColor: kSun.withValues(alpha: 0.35),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  title: Text(item.title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                  subtitle: Text('${formatDate(item.createdAt)} · ${formatDuration(item.durationSeconds)}'),
+                  trailing: StatusChip(label: statusLabel(item.status), color: statusColor(item.status)),
+                  onTap: () => _open(item),
                 ),
               ),
             ),
-          const SizedBox(height: 12),
-          const Text('Transcriptions', style: TextStyle(color: kText, fontSize: 16, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 12),
-          if (transcribed.isEmpty)
-            const Text('Transcribe a recording to see it here.', style: TextStyle(color: kMuted))
-          else
-            ...transcribed.map(
-              (item) => RecordingCard(
-                recording: item,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(builder: (_) => DetailScreen(recordingId: item.id)),
-                ),
-              ),
-            ),
+          ),
         ],
+      ),
+    );
+
+    if (!tablet) return CorkBackdrop(child: SafeArea(child: list));
+    return CorkBackdrop(
+      child: SafeArea(
+        child: Row(
+          children: [
+            Expanded(flex: 2, child: list),
+            Expanded(
+              flex: 3,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(0, 12, 16, 16),
+                child: _selected == null
+                    ? const EmptyHint(title: 'Elige una llamada', body: 'En tablet el detalle se abre aquí, sin salir de la lista.')
+                    : DetailScreen(key: ValueKey(_selected!.id), recordingId: _selected!.id, embedded: true),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.application.services.action_item_service import ActionItemService
 from app.application.services.agenda_service import AgendaService
 from app.application.services.analysis_service import AIAnalysisService
+from app.application.services.auth_service import AuthService
 from app.application.services.dashboard_service import DashboardService
 from app.application.services.export_service import ExportService
 from app.application.services.note_service import NoteService
@@ -47,6 +48,7 @@ class AppContainer:
     exports: ExportService
     search: SearchService
     dashboard: DashboardService
+    auth: AuthService
     uow_factory: Callable[[], SqlAlchemyUnitOfWork]
 
 
@@ -71,7 +73,8 @@ def build_container(settings: Settings | None = None) -> AppContainer:
     )
     analysis = AIAnalysisService(uow_factory, ai)
     action_items = ActionItemService(uow_factory)
-    notes = NoteService(uow_factory)
+    auth = AuthService(session_factory)
+    notes = NoteService(uow_factory, auth)
     tasks = TaskService(uow_factory)
     agenda = AgendaService(uow_factory)
     exports = ExportService(settings)
@@ -93,5 +96,6 @@ def build_container(settings: Settings | None = None) -> AppContainer:
         exports=exports,
         search=search,
         dashboard=dashboard,
+        auth=auth,
         uow_factory=uow_factory,
     )

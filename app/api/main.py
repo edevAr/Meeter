@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.deps import get_container, set_container
 from app.api.routes.action_items import router as action_items_router
 from app.api.routes.agenda import router as agenda_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.live import router as live_router
 from app.api.routes.notes import router as notes_router
 from app.api.routes.recordings import router as recordings_router
@@ -54,6 +55,7 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(auth_router)
     app.include_router(recordings_router)
     app.include_router(action_items_router)
     app.include_router(notes_router)

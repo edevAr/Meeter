@@ -10,6 +10,7 @@ import { RecordingsApi } from '../../core/recordings.service';
   imports: [FormsModule, RouterLink],
   template: `
     <section class="px-5 py-6 lg:px-8 max-w-5xl">
+      <a routerLink="/tablero" class="page-back">← Tablero</a>
       <p class="text-[10px] uppercase tracking-[0.24em] text-mist">Estudio</p>
       <h2 class="mt-1 text-2xl font-extrabold">Grabar y transcribir en vivo</h2>
       <p class="mt-2 max-w-2xl text-[13px] text-mist">El micrófono se convierte a texto mientras hablas. Al detener, se guarda la llamada, se pide el resumen y puedes crear notas.</p>

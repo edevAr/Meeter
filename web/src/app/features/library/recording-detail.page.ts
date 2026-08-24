@@ -1,15 +1,16 @@
 import { DatePipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { RecordingsApi } from '../../core/recordings.service';
 import { Analysis, Recording, Transcript } from '../../core/models';
 
 @Component({
   selector: 'app-recording-detail-page',
-  imports: [DatePipe],
+  imports: [DatePipe, RouterLink],
   template: `
     <section class="px-5 py-6 lg:px-8 max-w-4xl">
+      <a routerLink="/llamadas" class="page-back">← Llamadas</a>
       @if (recording(); as item) {
         <p class="text-[10px] uppercase tracking-[0.24em] text-mist">{{ item.created_at | date: 'd MMMM y' }}</p>
         <h2 class="mt-1 text-2xl font-extrabold">{{ item.title }}</h2>

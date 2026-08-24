@@ -1,14 +1,16 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 
 import { AgendaApi } from '../../core/agenda.service';
 import { AgendaItem, ItemStatus, Priority } from '../../core/models';
 
 @Component({
   selector: 'app-agenda-page',
-  imports: [FormsModule],
+  imports: [FormsModule, RouterLink],
   template: `
     <section class="px-5 py-6 lg:px-8">
+      <a routerLink="/tablero" class="page-back">← Tablero</a>
       <header class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p class="text-[10px] uppercase tracking-[0.24em] text-mist">Foco</p>

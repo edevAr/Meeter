@@ -10,6 +10,7 @@ import { Recording } from '../../core/models';
   imports: [RouterLink, DatePipe],
   template: `
     <section class="px-5 py-6 lg:px-8">
+      <a routerLink="/tablero" class="page-back">← Tablero</a>
       <header class="flex items-end justify-between">
         <div>
           <p class="text-[10px] uppercase tracking-[0.24em] text-mist">Archivo</p>
