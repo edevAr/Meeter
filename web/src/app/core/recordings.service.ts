@@ -29,8 +29,8 @@ export class RecordingsApi {
     return this.api.upload<Recording>('/api/recordings/upload', form);
   }
 
-  transcribe(id: string): Observable<Transcript> {
-    return this.api.post<Transcript>(`/api/recordings/${id}/transcribe`, {});
+  transcribe(id: string, language?: string): Observable<Transcript> {
+    return this.api.post<Transcript>(`/api/recordings/${id}/transcribe`, language ? { language } : {});
   }
 
   analyze(id: string): Observable<Analysis> {

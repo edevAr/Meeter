@@ -27,6 +27,7 @@ from app.domain.models.transcript import Transcript
 from app.infrastructure.audio.recorder import RecordingResult
 from app.infrastructure.ai.llm_provider import AIProviderError
 from app.infrastructure.security.files import FileValidationError, validate_audio_path
+from app.infrastructure.transcription.whisper_provider import TranscriptionError
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 
@@ -183,6 +184,8 @@ async def transcribe_recording(
         transcript = await container.transcriptions.transcribe(recording_id, language=language)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Recording not found") from exc
+    except TranscriptionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Transcription failed") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Transcription failed") from exc
     return transcript_out(transcript)

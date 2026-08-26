@@ -11,6 +11,7 @@ from app.application.services.analysis_service import AIAnalysisService
 from app.application.services.auth_service import AuthService
 from app.application.services.dashboard_service import DashboardService
 from app.application.services.export_service import ExportService
+from app.application.services.note_events import NoteEventHub
 from app.application.services.note_service import NoteService
 from app.application.services.recording_service import RecordingService
 from app.application.services.search_service import SearchService
@@ -55,6 +56,7 @@ def _container(settings: Settings, uow_factory) -> AppContainer:
         analysis=AIAnalysisService(uow_factory, ai),
         action_items=ActionItemService(uow_factory),
         notes=NoteService(uow_factory),
+        note_events=NoteEventHub(),
         tasks=TaskService(uow_factory),
         agenda=AgendaService(uow_factory),
         exports=ExportService(settings),

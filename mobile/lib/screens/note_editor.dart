@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../api.dart';
 import '../models.dart';
+import '../note_store.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
@@ -21,10 +22,13 @@ class NoteEditor extends StatefulWidget {
 class _NoteEditorState extends State<NoteEditor> {
   late final TextEditingController _title;
   late final TextEditingController _body;
+  final _titleFocus = FocusNode();
+  final _bodyFocus = FocusNode();
   late String _color;
   late int _priority;
   String _error = '';
   bool _busy = false;
+  NoteStore? _store;
 
   Note get note => widget.note;
   bool get canEdit => note.canEdit;
@@ -36,6 +40,17 @@ class _NoteEditorState extends State<NoteEditor> {
     _body = TextEditingController(text: note.plainText);
     _color = note.color;
     _priority = note.priority;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final store = context.read<NoteStore>();
+    if (_store != store) {
+      _store?.removeListener(_syncFromStore);
+      _store = store;
+      _store!.addListener(_syncFromStore);
+    }
   }
 
   @override
@@ -51,16 +66,32 @@ class _NoteEditorState extends State<NoteEditor> {
 
   @override
   void dispose() {
+    _store?.removeListener(_syncFromStore);
+    _titleFocus.dispose();
+    _bodyFocus.dispose();
     _title.dispose();
     _body.dispose();
     super.dispose();
   }
 
-  Future<void> _save() async {
+  void _syncFromStore() {
+    if (!mounted || _titleFocus.hasFocus || _bodyFocus.hasFocus) return;
+    if (_store?.pendingIds.contains(note.id) ?? false) return;
+    if (_title.text != note.title) _title.text = note.title;
+    if (_body.text != note.plainText) _body.text = note.plainText;
+    if (_color != note.color || _priority != note.priority) {
+      setState(() {
+        _color = note.color;
+        _priority = note.priority;
+      });
+    }
+  }
+
+  Future<void> _save({bool quiet = false}) async {
     if (!canEdit) return;
-    setState(() => _busy = true);
+    if (!quiet) setState(() => _busy = true);
     try {
-      await context.read<ApiClient>().updateNote(note.id, {
+      await context.read<NoteStore>().save(note, patch: {
         'title': _title.text.trim(),
         'body': note.mergeText(_body.text),
         'color': _color,
@@ -69,13 +100,13 @@ class _NoteEditorState extends State<NoteEditor> {
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && !quiet) setState(() => _busy = false);
     }
   }
 
   Future<void> _patch(Map<String, dynamic> payload) async {
     if (!note.isOwner) return;
-    await context.read<ApiClient>().updateNote(note.id, payload);
+    await context.read<NoteStore>().save(note, patch: payload);
     widget.onClose?.call();
     if (!widget.embedded && mounted) Navigator.pop(context);
   }
@@ -104,7 +135,9 @@ class _NoteEditorState extends State<NoteEditor> {
               Expanded(
                 child: TextField(
                   controller: _title,
+                  focusNode: _titleFocus,
                   readOnly: !canEdit,
+                  onChanged: (_) => _save(quiet: true),
                   onEditingComplete: _save,
                   onTapOutside: (_) => _save(),
                   style: GoogleFonts.caveat(fontSize: 28, fontWeight: FontWeight.w700, color: kInk),
@@ -136,9 +169,11 @@ class _NoteEditorState extends State<NoteEditor> {
           Expanded(
             child: TextField(
               controller: _body,
+              focusNode: _bodyFocus,
               readOnly: !canEdit,
               maxLines: null,
               expands: true,
+              onChanged: (_) => _save(quiet: true),
               onEditingComplete: _save,
               onTapOutside: (_) => _save(),
               style: GoogleFonts.nunito(fontSize: 16, height: 1.4, color: kInk),

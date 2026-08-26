@@ -58,6 +58,8 @@ const _es = {
   'account.logout': 'Cerrar sesión',
   'login.headline': 'Tu tablero del día',
   'login.lede': 'Disfruta creando tus notas diarias, notas de voz e incluso crea recordatorios en tus notas!',
+  'sync.offline': 'Sin conexión. Las notas se guardan aquí.',
+  'sync.pending': 'Sincronizando…',
 };
 
 const _en = {
@@ -77,4 +79,6 @@ const _en = {
   'account.logout': 'Log out',
   'login.headline': 'Your board for the day',
   'login.lede': 'Enjoy creating your daily notes, voice notes, and even reminders on your notes!',
+  'sync.offline': 'Offline. Notes are saved on this device.',
+  'sync.pending': 'Syncing…',
 };

@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     container = get_container()
+    container.note_events.bind(asyncio.get_running_loop())
+    container.recordings.reopen_stuck_transcriptions()
     warmup = getattr(container.transcription, "warmup", None)
     if callable(warmup):
         logger.info("Whisper warmup started")

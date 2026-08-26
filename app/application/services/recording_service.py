@@ -144,6 +144,24 @@ class RecordingService:
             uow.commit()
             return recording
 
+    def reopen_stuck_transcriptions(self) -> int:
+        """A killed worker leaves recordings in TRANSCRIBING. Make them retryable."""
+        count = 0
+        with self._uow_factory() as uow:
+            for recording in uow.recordings.list():
+                if recording.status != RecordingStatus.TRANSCRIBING:
+                    continue
+                recording.status = RecordingStatus.RECORDED
+                recording.error_message = None
+                recording.touch()
+                uow.recordings.update(recording)
+                count += 1
+            if count:
+                uow.commit()
+        if count:
+            logger.info("Reopened stuck transcriptions count=%s", count)
+        return count
+
     def rename(self, recording_id: str, title: str) -> Recording:
         with self._uow_factory() as uow:
             recording = uow.recordings.get(recording_id)

@@ -66,3 +66,19 @@ def test_save_upload(uow_factory, settings: Settings) -> None:
     assert recording.device_name == "mobile"
     assert Path(recording.file_path).exists()
     assert recording.status == RecordingStatus.RECORDED
+
+
+def test_reopen_stuck_transcriptions(uow_factory, settings: Settings) -> None:
+    service = RecordingService(uow_factory, settings)
+    wav = settings.recordings_path / "stuck.wav"
+    write_silence_wav(wav, 0.1)
+    recording = service.create_from_capture(
+        RecordingResult(path=wav, duration_seconds=0.1, bytes_written=wav.stat().st_size),
+        "Stuck",
+        AudioSourceType.MICROPHONE,
+    )
+    service.mark_status(recording.id, RecordingStatus.TRANSCRIBING)
+    assert service.reopen_stuck_transcriptions() == 1
+    stored = service.get(recording.id)
+    assert stored is not None
+    assert stored.status == RecordingStatus.RECORDED

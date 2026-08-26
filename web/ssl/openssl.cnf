@@ -1,0 +1,10 @@
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = Meeter
+[ext]
+subjectAltName = DNS:localhost,IP:127.0.0.1,IP:192.168.0.31
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth

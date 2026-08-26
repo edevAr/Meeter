@@ -173,6 +173,7 @@ class CallNoteCreate(BaseModel):
 
 
 class NoteCreate(BaseModel):
+    id: str | None = None
     title: str = ""
     body: str = ""
     color: str = "yellow"
@@ -230,6 +231,36 @@ class NoteOut(BaseModel):
     access: str = "owner"
     owner_name: str | None = None
     share_count: int = 0
+
+
+class NoteSyncItem(BaseModel):
+    id: str
+    title: str = ""
+    body: str = ""
+    color: str = "yellow"
+    pinned: bool = False
+    archived: bool = False
+    recording_id: str | None = None
+    priority: int = 1
+    pos_x: float = 72
+    pos_y: float = 72
+    rotation: float = -1.5
+    width: float = 180
+    height: float = 204
+    reminder_at: datetime | None = None
+    alarm_tone: str = "classic"
+    reminder_silenced: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    deleted: bool = False
+
+
+class NoteSyncIn(BaseModel):
+    notes: list[NoteSyncItem] = Field(default_factory=list)
+
+
+class NoteSyncOut(BaseModel):
+    notes: list[NoteOut]
 
 
 class NoteShareIn(BaseModel):

@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../account_menu.dart';
-import '../api.dart';
 import '../models.dart';
+import '../note_store.dart';
 import '../prefs.dart';
 import '../theme.dart';
 import '../widgets.dart';
@@ -18,40 +18,37 @@ class BoardScreen extends StatefulWidget {
   State<BoardScreen> createState() => _BoardScreenState();
 }
 
-class _BoardScreenState extends State<BoardScreen> {
-  List<Note> _notes = [];
+class _BoardScreenState extends State<BoardScreen> with WidgetsBindingObserver {
   DateTime _day = DateTime.now();
   Note? _selected;
-  bool _loading = true;
-  String _error = '';
   String _query = '';
 
   @override
   void initState() {
     super.initState();
-    _load();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<NoteStore>().refresh();
+    });
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = '';
-    });
-    try {
-      final notes = await context.read<ApiClient>().listNotes();
-      if (!mounted) return;
-      setState(() => _notes = notes.where((note) => !note.archived && !note.pinned).toList());
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _error = error.toString());
-    } finally {
-      if (mounted) setState(() => _loading = false);
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      context.read<NoteStore>().refresh();
     }
   }
 
-  List<Note> get _visible {
+  List<Note> _visible(List<Note> notes) {
     final key = dayKey(_day);
-    return _notes.where((note) {
+    return notes.where((note) {
+      if (note.archived || note.pinned) return false;
       final created = DateTime.tryParse(note.createdAt)?.toLocal();
       if (created == null || dayKey(created) != key) return false;
       if (_query.trim().isEmpty) return true;
@@ -62,12 +59,7 @@ class _BoardScreenState extends State<BoardScreen> {
   }
 
   Future<void> _add() async {
-    final created = await context.read<ApiClient>().createNote(
-          color: 'yellow',
-          createdAt: DateTime(_day.year, _day.month, _day.day, 12).toUtc().toIso8601String(),
-        );
-    if (!mounted) return;
-    setState(() => _notes = [..._notes, created]);
+    final created = context.read<NoteStore>().createNote(day: _day);
     await _open(created);
   }
 
@@ -77,7 +69,7 @@ class _BoardScreenState extends State<BoardScreen> {
       return;
     }
     await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => NoteEditor(note: note)));
-    await _load();
+    if (mounted) setState(() {});
   }
 
   Future<void> _pickDay() async {
@@ -93,12 +85,13 @@ class _BoardScreenState extends State<BoardScreen> {
   @override
   Widget build(BuildContext context) {
     final prefs = context.watch<PrefsController>();
+    final store = context.watch<NoteStore>();
     final header = headerOnCork(context);
     final tablet = isTablet(context);
-    final notes = _visible;
+    final notes = _visible(store.notes);
     final grid = RefreshIndicator(
       color: kSun,
-      onRefresh: _load,
+      onRefresh: store.refresh,
       child: CustomScrollView(
         slivers: [
           SliverToBoxAdapter(
@@ -140,6 +133,20 @@ class _BoardScreenState extends State<BoardScreen> {
               ],
             ),
           ),
+          if (!store.online || store.syncing || store.pending > 0)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(pagePadding(context), 0, pagePadding(context), 8),
+                child: Text(
+                  store.online ? prefs.t('sync.pending') : prefs.t('sync.offline'),
+                  style: TextStyle(
+                    color: store.online ? header.withValues(alpha: 0.8) : kSun,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ),
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(pagePadding(context), 0, pagePadding(context), 12),
@@ -150,16 +157,7 @@ class _BoardScreenState extends State<BoardScreen> {
               ),
             ),
           ),
-          if (_error.isNotEmpty)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: pagePadding(context)),
-                child: Text(_error, style: const TextStyle(color: kSun, fontWeight: FontWeight.w700)),
-              ),
-            ),
-          if (_loading && _notes.isEmpty)
-            const SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: kSun)))
-          else if (notes.isEmpty)
+          if (notes.isEmpty)
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.all(pagePadding(context)),
@@ -210,10 +208,7 @@ class _BoardScreenState extends State<BoardScreen> {
                   child: NoteEditor(
                     note: _selected!,
                     embedded: true,
-                    onClose: () {
-                      setState(() => _selected = null);
-                      _load();
-                    },
+                    onClose: () => setState(() => _selected = null),
                   ),
                 ),
               ),

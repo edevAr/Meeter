@@ -15,7 +15,7 @@ services:
       TRANSCRIPTS_PATH: "./data/transcripts"
       EXPORTS_PATH: "./data/exports"
       TRANSCRIPTION_PROVIDER: "faster-whisper"
-      WHISPER_MODEL: "${WHISPER_MODEL:-base}"
+      WHISPER_MODEL: "${WHISPER_MODEL:-tiny}"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
     volumes:

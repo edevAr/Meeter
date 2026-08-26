@@ -40,6 +40,7 @@ class RecordingStatus(StrEnum):
     def can_transcribe(self) -> bool:
         return self in {
             RecordingStatus.RECORDED,
+            RecordingStatus.TRANSCRIBING,
             RecordingStatus.TRANSCRIBED,
             RecordingStatus.ANALYZED,
             RecordingStatus.FAILED,

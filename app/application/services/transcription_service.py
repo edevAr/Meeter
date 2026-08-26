@@ -44,6 +44,14 @@ class TranscriptionService:
             if not recording.status.can_transcribe:
                 raise TranscriptionError("Recording is not ready to transcribe")
             path = recording.file_path
+            logger.info(
+                "EXTRACT pedido recording_id=%s title=%r duration=%.1fs language=%s file=%s",
+                recording_id,
+                recording.title,
+                recording.duration_seconds,
+                language or "auto",
+                Path(path).name,
+            )
             recording.status = RecordingStatus.TRANSCRIBING
             recording.error_message = None
             recording.touch()
@@ -60,11 +68,16 @@ class TranscriptionService:
             )
             speaker_turns = await self._diarization.identify_speakers(path)
         except Exception as exc:
+            message = str(exc).strip() or "Transcription failed"
+            if isinstance(exc, TranscriptionError):
+                logger.warning("EXTRACT error recording_id=%s detail=%s", recording_id, message)
+            else:
+                logger.exception("EXTRACT crashed recording_id=%s", recording_id)
             with self._uow_factory() as uow:
                 recording = uow.recordings.get(recording_id)
                 if recording is not None:
                     recording.status = RecordingStatus.FAILED
-                    recording.error_message = "Transcription failed"
+                    recording.error_message = message[:400]
                     recording.touch()
                     uow.recordings.update(recording)
                     uow.commit()
@@ -108,7 +121,13 @@ class TranscriptionService:
                 recording.touch()
                 uow.recordings.update(recording)
             uow.commit()
-        logger.info("Transcription saved")
+        logger.info(
+            "EXTRACT guardado recording_id=%s chars=%s language=%s segments=%s",
+            recording_id,
+            len(result.text or ""),
+            transcript.language,
+            len(segments),
+        )
         return transcript
 
     def get_for_recording(self, recording_id: str) -> Transcript | None:

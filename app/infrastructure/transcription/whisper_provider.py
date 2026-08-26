@@ -18,8 +18,15 @@ logger = logging.getLogger(__name__)
 
 # CTranslate2 / PyTorch are not safe for overlapping transcribe() calls.
 # Two live sockets (or stop + worker) previously stacked inferences and a 2.8s
-# clip took ~7 minutes on CPU.
+# clip took ~7 minutes on CPU. File extract with beam_size=5 then hung the
+# container at 100% CPU for an hour on a 2-minute webm.
 _INFER_LOCK = threading.Lock()
+_LOCK_WAIT_S = 90.0
+_FFMPEG_TIMEOUT_S = 40
+_MAX_FILE_SECONDS = 8 * 60
+_SAMPLE_RATE = 16000
+_CHUNK_SECONDS = 30
+_PROGRESS_BEAT_S = 15.0
 
 
 class TranscriptionError(RuntimeError):
@@ -35,45 +42,162 @@ def _cpu_threads() -> int:
 
 
 def faster_whisper_decode_options(*, live: bool, language: str | None) -> dict:
-    """Decode settings. Live must stay faster than realtime on CPU."""
+    """Decode settings. CPU Docker cannot run beam search without stalling the API."""
+    del live
     lang = None if not language or language in {"auto", "", "None"} else language
-    if live:
-        return {
-            "language": lang,
-            "beam_size": 1,
-            "best_of": 1,
-            "temperature": 0.0,
-            "condition_on_previous_text": False,
-            "vad_filter": True,
-            "vad_parameters": {"min_silence_duration_ms": 400, "speech_pad_ms": 160},
-            "without_timestamps": True,
-            "word_timestamps": False,
-        }
     return {
         "language": lang,
-        "beam_size": 5,
-        "best_of": 5,
-        "condition_on_previous_text": True,
-        "vad_filter": True,
+        "beam_size": 1,
+        "best_of": 1,
+        "temperature": 0.0,
+        "condition_on_previous_text": False,
+        # Silero VAD on Chrome MediaRecorder webm was splitting speech into
+        # hundreds of tiny windows; each one ran a full Whisper pass and the
+        # extract lock never came back.
+        "vad_filter": False,
+        "without_timestamps": True,
         "word_timestamps": False,
+        "chunk_length": _CHUNK_SECONDS,
+        "max_new_tokens": 224,
     }
 
 
 def openai_whisper_decode_options(*, live: bool, language: str | None) -> dict:
-    kwargs: dict = {"fp16": False, "verbose": False}
+    kwargs: dict = {
+        "fp16": False,
+        "verbose": False,
+        "beam_size": 1,
+        "best_of": 1,
+        "temperature": 0.0,
+        "condition_on_previous_text": False,
+        "without_timestamps": True,
+    }
     if language and language not in {"auto", "", "None"}:
         kwargs["language"] = language
-    if live:
-        kwargs.update(
-            {
-                "beam_size": 1,
-                "best_of": 1,
-                "temperature": 0.0,
-                "condition_on_previous_text": False,
-                "without_timestamps": True,
-            }
-        )
+    del live
     return kwargs
+
+
+def _audio_seconds(audio) -> float:
+    try:
+        import numpy as np
+    except ImportError:
+        return 0.0
+    if isinstance(audio, np.ndarray) and audio.size:
+        return float(audio.size) / _SAMPLE_RATE
+    return 0.0
+
+
+def _preview(text: str, limit: int = 48) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "…"
+
+
+def extract_percent(current: float, duration: float) -> int:
+    if duration <= 0:
+        return 0
+    return max(0, min(100, int(round(current / duration * 100))))
+
+
+class ExtractProgress:
+    """Logs Whisper extract progress, stalls, and failures to the API console."""
+
+    def __init__(self, duration: float, *, label: str = "", live: bool = False) -> None:
+        self.duration = max(0.0, duration)
+        self.label = label.strip()
+        self.live = live
+        self.last_t = 0.0
+        self.chars = 0
+        self.segments = 0
+        self.started = time.monotonic()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _tag(self) -> str:
+        return f"EXTRACT {self.label}".strip() if self.label else "EXTRACT"
+
+    def start(self, *, language: str | None = None, model: str | None = None) -> None:
+        extra = []
+        if model:
+            extra.append(f"modelo={model}")
+        if language:
+            extra.append(f"idioma={language}")
+        extra.append(f"duración={self.duration:.1f}s")
+        extra.append(f"ventanas~{max(1, int((self.duration + _CHUNK_SECONDS - 0.01) // _CHUNK_SECONDS))}")
+        logger.info("%s empezando %s", self._tag(), " ".join(extra))
+        if self.live:
+            return
+        self._thread = threading.Thread(target=self._heartbeat, name="extract-progress", daemon=True)
+        self._thread.start()
+
+    def segment(self, end: float, text: str) -> None:
+        self.last_t = max(self.last_t, float(end or 0.0))
+        self.chars += len(text)
+        self.segments += 1
+        snippet = _preview(text)
+        logger.info(
+            "%s progreso %s elapsed=%.1fs «%s»",
+            self._tag(),
+            self._status(),
+            time.monotonic() - self.started,
+            snippet,
+        )
+
+    def done(self, text_len: int) -> None:
+        self.stop()
+        logger.info(
+            "%s listo %s chars=%s segmentos=%s elapsed=%.1fs",
+            self._tag(),
+            self._status(),
+            text_len,
+            self.segments,
+            time.monotonic() - self.started,
+        )
+
+    def fail(self, exc: BaseException) -> None:
+        self.stop()
+        logger.error(
+            "%s falló %s elapsed=%.1fs detail=%s",
+            self._tag(),
+            self._status(),
+            time.monotonic() - self.started,
+            str(exc).strip() or type(exc).__name__,
+        )
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _status(self) -> str:
+        pct = extract_percent(self.last_t, self.duration)
+        if self.duration > 0:
+            return f"{self.last_t:.1f}/{self.duration:.1f}s ({pct}%)"
+        return f"{self.last_t:.1f}s chars={self.chars}"
+
+    def _heartbeat(self) -> None:
+        last_seen = (self.last_t, self.chars)
+        while not self._stop.wait(_PROGRESS_BEAT_S):
+            elapsed = time.monotonic() - self.started
+            stuck = (self.last_t, self.chars) == last_seen
+            last_seen = (self.last_t, self.chars)
+            if stuck:
+                logger.warning(
+                    "%s sin avance en %.0fs %s chars=%s elapsed=%.0fs — Whisper sigue dentro de una ventana o está trabado",
+                    self._tag(),
+                    _PROGRESS_BEAT_S,
+                    self._status(),
+                    self.chars,
+                    elapsed,
+                )
+            else:
+                logger.info(
+                    "%s sigue %s chars=%s elapsed=%.0fs",
+                    self._tag(),
+                    self._status(),
+                    self.chars,
+                    elapsed,
+                )
 
 
 def pcm16_to_float32(pcm16: bytes):
@@ -83,6 +207,82 @@ def pcm16_to_float32(pcm16: bytes):
     if samples.size == 0:
         return np.zeros(0, dtype=np.float32)
     return np.ascontiguousarray(samples.astype(np.float32) / 32768.0)
+
+
+def decode_audio_file(path: str):
+    """Decode with ffmpeg so malformed webm cannot stall PyAV inside Whisper.
+
+    Chrome MediaRecorder files often have no duration. If ffmpeg cannot parse
+    them, fall back to the original path instead of failing the extract.
+    """
+    import numpy as np
+    import subprocess
+
+    logger.info("EXTRACT leyendo audio con ffmpeg path=%s", path)
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-fflags",
+                "+genpts+discardcorrupt",
+                "-err_detect",
+                "ignore_err",
+                "-i",
+                path,
+                "-ac",
+                "1",
+                "-ar",
+                str(_SAMPLE_RATE),
+                "-t",
+                str(_MAX_FILE_SECONDS),
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=_FFMPEG_TIMEOUT_S,
+            check=False,
+        )
+    except FileNotFoundError:
+        return path
+    except subprocess.TimeoutExpired:
+        logger.warning("EXTRACT ffmpeg tardó demasiado path=%s; Whisper abrirá el archivo", path)
+        return path
+    if proc.returncode != 0 or not proc.stdout:
+        detail = (proc.stderr or b"").decode("utf-8", "ignore").strip()
+        logger.warning("EXTRACT ffmpeg falló path=%s detail=%s; Whisper abrirá el archivo", path, detail[:240])
+        return path
+    samples = np.frombuffer(proc.stdout, dtype=np.int16)
+    if samples.size == 0:
+        logger.warning("EXTRACT ffmpeg devolvió audio vacío path=%s; Whisper abrirá el archivo", path)
+        return path
+    audio = np.ascontiguousarray(samples.astype(np.float32) / 32768.0)
+    logger.info("EXTRACT audio listo path=%s duración=%.2fs", path, audio.size / _SAMPLE_RATE)
+    return audio
+
+
+def _run_locked(work, wait_log: str | None = None):
+    tag = wait_log or "EXTRACT"
+    waited_from = time.monotonic()
+    if wait_log:
+        logger.info("%s esperando turno de Whisper", tag)
+    acquired = _INFER_LOCK.acquire(timeout=_LOCK_WAIT_S)
+    if not acquired:
+        logger.error("%s Whisper ocupado durante %.0fs — abortando", tag, _LOCK_WAIT_S)
+        raise TranscriptionError("El transcriptor está ocupado. Espera un momento y vuelve a intentar.")
+    waited = time.monotonic() - waited_from
+    if waited > 0.05:
+        logger.info("%s Whisper libre tras %.1fs", tag, waited)
+    try:
+        return work()
+    finally:
+        _INFER_LOCK.release()
 
 
 def _segments_from_whisper(raw_segments: list) -> list[TranscriptSegmentResult]:
@@ -114,7 +314,7 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
         self._model = None
 
     def warmup(self) -> None:
-        self._transcribe_audio(pcm16_to_float32(b"\x00\x00" * 16000), language="es", live=True)
+        self._load()
 
     def _load(self):
         if self._model is None:
@@ -130,11 +330,8 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
         return self._model
 
     def _transcribe_audio(self, audio, language: str | None, live: bool) -> TranscriptResult:
-        waited = time.monotonic()
-        with _INFER_LOCK:
-            lock_wait = time.monotonic() - waited
-            if lock_wait > 0.05:
-                logger.info("Whisper lock wait_s=%.2f live=%s", lock_wait, live)
+        def work() -> TranscriptResult:
+            waited = time.monotonic()
             model = self._load()
             kwargs = openai_whisper_decode_options(live=live, language=language)
             started = time.monotonic()
@@ -144,10 +341,11 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
             text = str(result.get("text", "")).strip()
             detected = result.get("language")
             logger.info(
-                "Whisper done live=%s elapsed_s=%.2f chars=%s",
+                "Whisper done live=%s elapsed_s=%.2f chars=%s load_s=%.2f",
                 live,
                 elapsed,
                 len(text),
+                started - waited,
             )
             return TranscriptResult(
                 text=text,
@@ -156,6 +354,8 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
                 provider=self.name,
                 model_name=self.model_name,
             )
+
+        return _run_locked(work)
 
     async def transcribe(
         self,
@@ -169,7 +369,8 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
             progress_callback(5)
         logger.info("Transcription started live=%s", live)
         try:
-            result = await asyncio.to_thread(self._transcribe_audio, str(path), language, live)
+            audio = await asyncio.to_thread(decode_audio_file, str(path))
+            result = await asyncio.to_thread(self._transcribe_audio, audio, language, live)
         except FileValidationError:
             raise
         except TranscriptionError:
@@ -193,6 +394,8 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
         logger.info("Transcription started live=%s pcm_s=%.2f", live, len(audio) / 16000)
         try:
             result = await asyncio.to_thread(self._transcribe_audio, audio, language, live)
+        except TranscriptionError:
+            raise
         except Exception as exc:
             raise TranscriptionError("Transcription failed") from exc
         logger.info("Transcription completed live=%s", live)
@@ -209,7 +412,7 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
         self._model = None
 
     def warmup(self) -> None:
-        self._transcribe_audio(pcm16_to_float32(b"\x00\x00" * 16000), language="es", live=True)
+        self._load()
 
     def _load(self):
         if self._model is None:
@@ -235,16 +438,32 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
             logger.info("faster-whisper model loading completed name=%s", self.model_name)
         return self._model
 
-    def _transcribe_audio(self, audio, language: str | None, live: bool) -> TranscriptResult:
+    def _decode_once(self, audio, language: str | None, live: bool) -> TranscriptResult:
+        duration = _audio_seconds(audio)
+        progress = ExtractProgress(duration, live=live)
         waited = time.monotonic()
-        with _INFER_LOCK:
-            lock_wait = time.monotonic() - waited
-            if lock_wait > 0.05:
-                logger.info("faster-whisper lock wait_s=%.2f live=%s", lock_wait, live)
+        try:
             model = self._load()
             options = faster_whisper_decode_options(live=live, language=language)
+            progress.start(language=language, model=self.model_name)
             started = time.monotonic()
+            logger.info(
+                "%s Whisper transcribe() arrancó live=%s load_s=%.2f",
+                progress._tag(),
+                live,
+                started - waited,
+            )
             segments_iter, info = model.transcribe(audio, **options)
+            detected = getattr(info, "language", language)
+            info_duration = float(getattr(info, "duration", 0.0) or 0.0)
+            if info_duration > 0:
+                progress.duration = info_duration
+            logger.info(
+                "%s modelo listo idioma=%s duración=%.1fs — iterando segmentos",
+                progress._tag(),
+                detected or "auto",
+                progress.duration,
+            )
             segments: list[TranscriptSegmentResult] = []
             parts: list[str] = []
             for seg in segments_iter:
@@ -259,14 +478,16 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
                         text=text,
                     )
                 )
+                progress.segment(float(seg.end), text)
             elapsed = time.monotonic() - started
-            detected = getattr(info, "language", language)
             joined = " ".join(parts).strip()
+            progress.done(len(joined))
             logger.info(
-                "faster-whisper done live=%s elapsed_s=%.2f chars=%s",
+                "faster-whisper done live=%s elapsed_s=%.2f chars=%s load_s=%.2f",
                 live,
                 elapsed,
                 len(joined),
+                started - waited,
             )
             return TranscriptResult(
                 text=joined,
@@ -275,6 +496,21 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
                 provider=self.name,
                 model_name=self.model_name,
             )
+        except Exception as exc:
+            progress.fail(exc)
+            logger.exception("%s excepción en Whisper", progress._tag())
+            raise
+        finally:
+            progress.stop()
+
+    def _transcribe_audio(self, audio, language: str | None, live: bool) -> TranscriptResult:
+        tag = "EXTRACT"
+        waited = time.monotonic()
+        result = _run_locked(lambda: self._decode_once(audio, language, live), wait_log=tag)
+        lock_wait = time.monotonic() - waited
+        if lock_wait > 0.05:
+            logger.info("%s espera de candado=%.2fs live=%s", tag, lock_wait, live)
+        return result
 
     async def transcribe(
         self,
@@ -286,9 +522,17 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
         path = validate_audio_path(Path(audio_path), self.max_bytes, must_exist=True)
         if progress_callback:
             progress_callback(5)
-        logger.info("Transcription started live=%s", live)
-        result = await asyncio.to_thread(self._transcribe_audio, str(path), language, live)
-        logger.info("Transcription completed live=%s", live)
+        logger.info("EXTRACT Transcription started live=%s path=%s", live, path.name)
+        try:
+            audio = await asyncio.to_thread(decode_audio_file, str(path))
+            result = await asyncio.to_thread(self._transcribe_audio, audio, language, live)
+        except TranscriptionError as exc:
+            logger.error("EXTRACT TranscriptionError live=%s detail=%s", live, exc)
+            raise
+        except Exception as exc:
+            logger.exception("EXTRACT crashed live=%s", live)
+            raise TranscriptionError("Transcription failed") from exc
+        logger.info("EXTRACT Transcription completed live=%s chars=%s", live, len(result.text or ""))
         if progress_callback:
             progress_callback(100)
         return result

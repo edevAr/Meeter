@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_container, get_current_user
 from app.api.schemas import (
@@ -11,6 +15,8 @@ from app.api.schemas import (
     NoteShareIn,
     NoteShareOut,
     NoteSharePatch,
+    NoteSyncIn,
+    NoteSyncOut,
 )
 from app.application.services.note_service import NoteAccessError
 from app.container import AppContainer
@@ -30,6 +36,28 @@ def _share_out(share: NoteShare) -> NoteShareOut:
     return NoteShareOut.model_validate(share.model_dump())
 
 
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def _broadcast(
+    container: AppContainer,
+    op: str,
+    note: Note | None,
+    *,
+    note_id: str | None = None,
+    audience: list[str] | None = None,
+) -> None:
+    nid = note_id or (note.id if note else "")
+    users = audience if audience is not None else container.notes.audience_ids(nid)
+    payload: dict = {"op": op, "id": nid, "deleted": op == "delete"}
+    if note is not None and op != "delete":
+        data = _out(note).model_dump(mode="json")
+        payload["note"] = data
+        payload["updated_at"] = data.get("updated_at")
+    container.note_events.publish(users, payload)
+
+
 def _raise_access(exc: NoteAccessError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -41,6 +69,50 @@ def list_notes(
     user: User = Depends(get_current_user),
 ) -> list[NoteOut]:
     return [_out(note) for note in container.notes.list_for_board(archived=archived, user_id=user.id)]
+
+
+@router.post("/sync", response_model=NoteSyncOut)
+def sync_notes(
+    payload: NoteSyncIn,
+    container: AppContainer = Depends(get_container),
+    user: User = Depends(get_current_user),
+) -> NoteSyncOut:
+    def emit(op: str, note: Note | None, note_id: str, audience: list[str]) -> None:
+        _broadcast(container, op, note, note_id=note_id, audience=audience)
+
+    notes = container.notes.sync(user.id, payload.notes, emit=emit)
+    return NoteSyncOut(notes=[_out(note) for note in notes])
+
+
+@router.get("/events")
+async def note_events(
+    container: AppContainer = Depends(get_container),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    queue = container.note_events.subscribe(user.id)
+
+    async def stream():
+        try:
+            yield _sse("ready", {"ok": True})
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20)
+                except asyncio.TimeoutError:
+                    yield _sse("ping", {})
+                    continue
+                yield _sse("note", event)
+        finally:
+            container.note_events.unsubscribe(user.id, queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/from-call", response_model=NoteOut, status_code=201)
@@ -69,6 +141,7 @@ async def note_from_call(
         created_at=payload.created_at,
         user_id=user.id,
     )
+    _broadcast(container, "upsert", note)
     return _out(note)
 
 
@@ -78,25 +151,26 @@ def create_note(
     container: AppContainer = Depends(get_container),
     user: User = Depends(get_current_user),
 ) -> NoteOut:
-    return _out(
-        container.notes.create(
-            title=payload.title,
-            body=payload.body,
-            color=payload.color,
-            recording_id=payload.recording_id,
-            pinned=payload.pinned,
-            priority=payload.priority,
-            pos_x=payload.pos_x,
-            pos_y=payload.pos_y,
-            rotation=payload.rotation,
-            width=payload.width,
-            height=payload.height,
-            created_at=payload.created_at,
-            reminder_at=payload.reminder_at,
-            alarm_tone=payload.alarm_tone,
-            user_id=user.id,
-        )
+    note = container.notes.create(
+        note_id=payload.id,
+        title=payload.title,
+        body=payload.body,
+        color=payload.color,
+        recording_id=payload.recording_id,
+        pinned=payload.pinned,
+        priority=payload.priority,
+        pos_x=payload.pos_x,
+        pos_y=payload.pos_y,
+        rotation=payload.rotation,
+        width=payload.width,
+        height=payload.height,
+        created_at=payload.created_at,
+        reminder_at=payload.reminder_at,
+        alarm_tone=payload.alarm_tone,
+        user_id=user.id,
     )
+    _broadcast(container, "upsert", note)
+    return _out(note)
 
 
 @router.get("/{note_id}/shares", response_model=list[NoteShareOut])
@@ -120,15 +194,17 @@ def share_note(
     user: User = Depends(get_current_user),
 ) -> NoteShareOut:
     try:
-        return _share_out(
-            container.notes.share(
-                note_id,
-                user.id,
-                identifier=payload.identifier,
-                can_read=payload.can_read,
-                can_write=payload.can_write,
-            )
+        share = container.notes.share(
+            note_id,
+            user.id,
+            identifier=payload.identifier,
+            can_read=payload.can_read,
+            can_write=payload.can_write,
         )
+        note = container.notes.get(note_id, user_id=user.id)
+        if note is not None:
+            _broadcast(container, "upsert", note, audience=container.notes.audience_ids(note_id))
+        return _share_out(share)
     except NoteAccessError as exc:
         _raise_access(exc)
         raise
@@ -164,10 +240,18 @@ def unshare_note(
     container: AppContainer = Depends(get_container),
     user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    recipient_id = None
     try:
+        people = container.notes.list_shares(note_id, user.id)
+        recipient_id = next((share.user_id for share in people if share.id == share_id), None)
         container.notes.unshare(note_id, share_id, user.id)
     except NoteAccessError as exc:
         _raise_access(exc)
+    if recipient_id:
+        _broadcast(container, "delete", None, note_id=note_id, audience=[recipient_id])
+    note = container.notes.get(note_id, user_id=user.id)
+    if note is not None:
+        _broadcast(container, "upsert", note)
     return {"detail": "unshared"}
 
 
@@ -196,7 +280,9 @@ def patch_note(
         note.updated_at = utcnow()
     for key, value in data.items():
         setattr(note, key, value)
-    return _out(container.notes.update(note))
+    saved = container.notes.update(note)
+    _broadcast(container, "upsert", saved)
+    return _out(saved)
 
 
 @router.delete("/{note_id}")
@@ -205,8 +291,10 @@ def delete_note(
     container: AppContainer = Depends(get_container),
     user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    audience = container.notes.audience_ids(note_id)
     try:
         container.notes.delete(note_id, user_id=user.id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Note not found") from exc
+    _broadcast(container, "delete", None, note_id=note_id, audience=audience)
     return {"detail": "deleted"}

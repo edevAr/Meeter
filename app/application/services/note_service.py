@@ -6,6 +6,14 @@ from app.application.services.auth_service import AuthError, AuthService
 from app.domain.models.note import Note, NoteShare
 
 
+def _stamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 class NoteAccessError(Exception):
     def __init__(self, message: str, status_code: int = 403) -> None:
         super().__init__(message)
@@ -91,17 +99,22 @@ class NoteService:
         width: float = 248,
         height: float = 280,
         created_at: datetime | None = None,
+        updated_at: datetime | None = None,
         reminder_at: datetime | None = None,
         alarm_tone: str = "classic",
         reminder_silenced: bool = False,
+        archived: bool = False,
         user_id: str | None = None,
+        note_id: str | None = None,
     ) -> Note:
-        stamp = created_at or datetime.now(timezone.utc)
-        note = Note(
+        created = created_at or datetime.now(timezone.utc)
+        touched = updated_at or datetime.now(timezone.utc)
+        payload = dict(
             title=title.strip(),
             body=body.strip(),
             color=color or "yellow",
             pinned=pinned,
+            archived=bool(archived),
             recording_id=recording_id,
             priority=max(1, min(5, priority)),
             pos_x=pos_x,
@@ -113,20 +126,111 @@ class NoteService:
             alarm_tone=alarm_tone or "classic",
             reminder_silenced=bool(reminder_silenced),
             user_id=user_id,
-            created_at=stamp,
-            updated_at=stamp,
+            created_at=created,
+            updated_at=touched,
         )
+        if note_id:
+            payload["id"] = note_id.strip()
+        note = Note(**payload)
         with self._uow_factory() as uow:
             uow.notes.add(note)
             uow.commit()
             return note
 
-    def update(self, note: Note) -> Note:
-        note.updated_at = datetime.now(timezone.utc)
+    def update(self, note: Note, touch: bool = True) -> Note:
+        if touch:
+            note.updated_at = datetime.now(timezone.utc)
         with self._uow_factory() as uow:
             saved = uow.notes.update(note)
             uow.commit()
             return saved
+
+    def audience_ids(self, note_id: str) -> list[str]:
+        with self._uow_factory() as uow:
+            note = uow.notes.get(note_id)
+            if note is None:
+                return []
+            ids: list[str] = []
+            if note.user_id:
+                ids.append(note.user_id)
+            ids.extend(share.user_id for share in uow.notes.list_shares(note_id))
+        return list(dict.fromkeys(ids))
+
+    def sync(self, user_id: str, items: list, emit=None) -> list[Note]:
+        for item in items:
+            note_id = (getattr(item, "id", None) or "").strip()
+            if not note_id:
+                continue
+            if getattr(item, "deleted", False):
+                audience = self.audience_ids(note_id)
+                try:
+                    self.delete(note_id, user_id)
+                    if emit:
+                        emit("delete", None, note_id, audience)
+                except KeyError:
+                    pass
+                continue
+            existing = self.get(note_id, user_id=user_id)
+            incoming_at = _stamp(getattr(item, "updated_at", None))
+            if existing is None:
+                owned = self.get(note_id)
+                if owned is not None:
+                    continue
+                self.create(
+                    note_id=note_id,
+                    title=item.title,
+                    body=item.body,
+                    color=item.color,
+                    recording_id=item.recording_id,
+                    pinned=item.pinned,
+                    priority=item.priority,
+                    pos_x=item.pos_x,
+                    pos_y=item.pos_y,
+                    rotation=item.rotation,
+                    width=item.width,
+                    height=item.height,
+                    created_at=_stamp(item.created_at) or incoming_at,
+                    updated_at=incoming_at,
+                    reminder_at=item.reminder_at,
+                    alarm_tone=item.alarm_tone,
+                    reminder_silenced=item.reminder_silenced,
+                    archived=bool(item.archived),
+                    user_id=user_id,
+                )
+                saved = self.get(note_id, user_id=user_id)
+                if emit and saved is not None:
+                    emit("upsert", saved, note_id, self.audience_ids(note_id))
+                continue
+            access = self.access_of(note_id, user_id)
+            if access == "read":
+                continue
+            if _stamp(existing.updated_at) and incoming_at and incoming_at < _stamp(existing.updated_at):
+                continue
+            existing.title = item.title
+            existing.body = item.body
+            existing.color = item.color or existing.color
+            existing.priority = max(1, min(5, int(item.priority or existing.priority)))
+            existing.pos_x = item.pos_x
+            existing.pos_y = item.pos_y
+            existing.rotation = item.rotation
+            existing.width = item.width
+            existing.height = item.height
+            existing.reminder_at = item.reminder_at
+            existing.alarm_tone = item.alarm_tone or existing.alarm_tone
+            existing.reminder_silenced = bool(item.reminder_silenced)
+            existing.recording_id = item.recording_id or existing.recording_id
+            if getattr(item, "created_at", None):
+                existing.created_at = _stamp(item.created_at) or existing.created_at
+            if access == "owner":
+                existing.pinned = bool(item.pinned)
+                existing.archived = bool(item.archived)
+            existing.updated_at = incoming_at or datetime.now(timezone.utc)
+            saved = self.update(existing, touch=False)
+            if emit:
+                emit("upsert", saved, note_id, self.audience_ids(note_id))
+        return self.list_for_board(archived=False, user_id=user_id) + self.list_for_board(
+            archived=True, user_id=user_id
+        )
 
     def delete(self, note_id: str, user_id: str | None = None) -> None:
         with self._uow_factory() as uow:

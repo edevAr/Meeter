@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ai_call_recorder/api.dart';
+import 'package:ai_call_recorder/models.dart';
 import 'package:ai_call_recorder/theme.dart';
 
 void main() {
@@ -16,5 +17,11 @@ void main() {
 
   test('day key pads month and day', () {
     expect(dayKey(DateTime(2026, 8, 3)), '2026-08-03');
+  });
+
+  test('note ids are stable uuids for offline sync', () {
+    final id = newNoteId();
+    expect(id.contains('local-'), isFalse);
+    expect(id.split('-').length, 5);
   });
 }

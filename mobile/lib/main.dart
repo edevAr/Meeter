@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'api.dart';
+import 'note_store.dart';
 import 'prefs.dart';
 import 'screens/board_screen.dart';
 import 'screens/login_screen.dart';
@@ -12,11 +13,14 @@ Future<void> main() async {
   final api = ApiClient();
   final prefs = PrefsController();
   await Future.wait([api.load(), prefs.load()]);
+  final notes = NoteStore(api);
+  await notes.start();
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: api),
         ChangeNotifierProvider.value(value: prefs),
+        ChangeNotifierProvider.value(value: notes),
       ],
       child: const MeeterApp(),
     ),

@@ -1,3 +1,5 @@
+import 'dart:math';
+
 class AuthUser {
   AuthUser({required this.id, required this.email, required this.name});
 
@@ -32,6 +34,13 @@ class Note {
     this.access = 'owner',
     this.ownerName,
     this.shareCount = 0,
+    this.posX = 72,
+    this.posY = 72,
+    this.rotation = -1.5,
+    this.width = 180,
+    this.height = 204,
+    this.alarmTone = 'classic',
+    this.reminderSilenced = false,
   });
 
   final String id;
@@ -43,11 +52,18 @@ class Note {
   int priority;
   final String? recordingId;
   String? reminderAt;
-  final String createdAt;
+  String createdAt;
   String updatedAt;
   String access;
   String? ownerName;
   int shareCount;
+  double posX;
+  double posY;
+  double rotation;
+  double width;
+  double height;
+  String alarmTone;
+  bool reminderSilenced;
 
   bool get isOwner => access != 'read' && access != 'write';
   bool get canEdit => access != 'read';
@@ -69,8 +85,37 @@ class Note {
       access: json['access'] as String? ?? 'owner',
       ownerName: json['owner_name'] as String?,
       shareCount: json['share_count'] as int? ?? 0,
+      posX: (json['pos_x'] as num?)?.toDouble() ?? 72,
+      posY: (json['pos_y'] as num?)?.toDouble() ?? 72,
+      rotation: (json['rotation'] as num?)?.toDouble() ?? -1.5,
+      width: (json['width'] as num?)?.toDouble() ?? 180,
+      height: (json['height'] as num?)?.toDouble() ?? 204,
+      alarmTone: json['alarm_tone'] as String? ?? 'classic',
+      reminderSilenced: json['reminder_silenced'] as bool? ?? false,
     );
   }
+
+  Map<String, dynamic> toSyncJson({bool deleted = false}) => {
+        'id': id,
+        'title': title,
+        'body': body,
+        'color': color,
+        'pinned': pinned,
+        'archived': archived,
+        'recording_id': recordingId,
+        'priority': priority,
+        'pos_x': posX,
+        'pos_y': posY,
+        'rotation': rotation,
+        'width': width,
+        'height': height,
+        'reminder_at': reminderAt,
+        'alarm_tone': alarmTone,
+        'reminder_silenced': reminderSilenced,
+        'created_at': createdAt,
+        'updated_at': updatedAt,
+        'deleted': deleted,
+      };
 
   String get plainText {
     return body
@@ -84,6 +129,34 @@ class Note {
     final marks = RegExp(r'<!--meeter-marks:.*?-->', dotAll: true).firstMatch(body)?.group(0) ?? '';
     return '$text$images$marks';
   }
+
+  void applyFrom(Note other) {
+    title = other.title;
+    body = other.body;
+    color = other.color;
+    pinned = other.pinned;
+    archived = other.archived;
+    priority = other.priority;
+    reminderAt = other.reminderAt;
+    createdAt = other.createdAt;
+    updatedAt = other.updatedAt;
+    access = other.access;
+    ownerName = other.ownerName;
+    shareCount = other.shareCount;
+    posX = other.posX;
+    posY = other.posY;
+    rotation = other.rotation;
+    width = other.width;
+    height = other.height;
+    alarmTone = other.alarmTone;
+    reminderSilenced = other.reminderSilenced;
+  }
+}
+
+String newNoteId() {
+  final rand = Random.secure();
+  String hex(int length) => List.generate(length, (_) => rand.nextInt(16).toRadixString(16)).join();
+  return '${hex(8)}-${hex(4)}-4${hex(3)}-${(8 + rand.nextInt(4)).toRadixString(16)}${hex(3)}-${hex(12)}';
 }
 
 class NoteShare {

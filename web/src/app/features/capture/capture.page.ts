@@ -2,7 +2,7 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 
-import { LiveCaptureService, LiveSession } from '../../core/live-capture.service';
+import { LiveCaptureService, LiveSession, microphoneErrorMessage } from '../../core/live-capture.service';
 import { RecordingsApi } from '../../core/recordings.service';
 
 @Component({
@@ -12,8 +12,8 @@ import { RecordingsApi } from '../../core/recordings.service';
     <section class="px-5 py-6 lg:px-8 max-w-5xl">
       <a routerLink="/tablero" class="page-back">← Tablero</a>
       <p class="text-[10px] uppercase tracking-[0.24em] text-mist">Estudio</p>
-      <h2 class="mt-1 text-2xl font-extrabold">Grabar y transcribir en vivo</h2>
-      <p class="mt-2 max-w-2xl text-[13px] text-mist">El micrófono se convierte a texto mientras hablas. Al detener, se guarda la llamada, se pide el resumen y puedes crear notas.</p>
+      <h2 class="mt-1 text-2xl font-extrabold">Grabar</h2>
+      <p class="mt-2 max-w-2xl text-[13px] text-mist">Clippy graba el audio. El texto se extrae después, cuando pulses Extraer texto en la nota.</p>
 
       <div class="mt-6 rounded-3xl border border-line bg-card p-5">
         <label class="text-[13px] text-mist">Título de la llamada</label>
@@ -36,8 +36,8 @@ import { RecordingsApi } from '../../core/recordings.service';
       </div>
 
       <article class="mt-5 min-h-[220px] rounded-3xl border border-line bg-panel p-5">
-        <p class="text-[10px] uppercase tracking-[0.2em] text-accent">Transcripción en tiempo real</p>
-        <p class="mt-3 font-note text-[15px] leading-7 whitespace-pre-wrap">{{ transcript() || 'Pulsa grabar. El texto aparecerá aquí.' }}</p>
+        <p class="text-[10px] uppercase tracking-[0.2em] text-accent">Estado</p>
+        <p class="mt-3 font-note text-[15px] leading-7 whitespace-pre-wrap">{{ session ? 'Escuchando...' : (transcript() || 'Pulsa grabar para empezar.') }}</p>
       </article>
     </section>
   `,
@@ -63,8 +63,8 @@ export class CapturePage {
     this.status.set('Escuchando…');
     try {
       this.session = await this.live.start((text) => this.transcript.set(text));
-    } catch {
-      this.error.set('No se pudo acceder al micrófono.');
+    } catch (error) {
+      this.error.set(microphoneErrorMessage(error));
       this.status.set('');
     }
   }

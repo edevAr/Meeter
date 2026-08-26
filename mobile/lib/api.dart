@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -90,20 +91,30 @@ class ApiClient extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const _timeout = Duration(seconds: 8);
+
   Future<dynamic> _send(String method, String path, {Object? body, bool allow404 = false}) async {
     final uri = Uri.parse('$baseUrl$path');
     late http.Response response;
-    switch (method) {
-      case 'GET':
-        response = await http.get(uri, headers: _headers);
-      case 'POST':
-        response = await http.post(uri, headers: _headers, body: body);
-      case 'PATCH':
-        response = await http.patch(uri, headers: _headers, body: body);
-      case 'DELETE':
-        response = await http.delete(uri, headers: _headers);
-      default:
-        throw ApiException('Método no soportado');
+    try {
+      switch (method) {
+        case 'GET':
+          response = await http.get(uri, headers: _headers).timeout(_timeout);
+        case 'POST':
+          response = await http.post(uri, headers: _headers, body: body).timeout(_timeout);
+        case 'PATCH':
+          response = await http.patch(uri, headers: _headers, body: body).timeout(_timeout);
+        case 'DELETE':
+          response = await http.delete(uri, headers: _headers).timeout(_timeout);
+        default:
+          throw ApiException('Método no soportado');
+      }
+    } on SocketException {
+      throw ApiException('Sin conexión.', statusCode: 0);
+    } on TimeoutException {
+      throw ApiException('Sin conexión.', statusCode: 0);
+    } on http.ClientException {
+      throw ApiException('Sin conexión.', statusCode: 0);
     }
     if (response.statusCode == 401) {
       token = null;
@@ -154,6 +165,86 @@ class ApiClient extends ChangeNotifier {
       '/api/auth/reset-password',
       body: jsonEncode({'email': email, 'code': code, 'password': password}),
     );
+  }
+
+  Future<bool> isReachable() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/api/health')).timeout(const Duration(seconds: 4));
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<Note>> syncNotes(List<Map<String, dynamic>> notes) async {
+    final json = await _send('POST', '/api/notes/sync', body: jsonEncode({'notes': notes})) as Map<String, dynamic>;
+    final items = json['notes'] as List<dynamic>? ?? [];
+    return items.map((item) => Note.fromJson(item as Map<String, dynamic>)).toList();
+  }
+
+  Stream<Map<String, dynamic>> noteEvents() async* {
+    final client = http.Client();
+    try {
+      final request = http.Request('GET', Uri.parse('$baseUrl/api/notes/events'));
+      request.headers.addAll({
+        ..._headers,
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      });
+      final response = await client.send(request);
+      if (response.statusCode == 401) {
+        token = null;
+        user = null;
+        notifyListeners();
+        throw ApiException('Inicia sesión para continuar.', statusCode: 401);
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiException('Sin conexión.', statusCode: response.statusCode);
+      }
+      var buffer = '';
+      await for (final chunk in response.stream.transform(utf8.decoder)) {
+        buffer += chunk;
+        var split = buffer.indexOf('\n\n');
+        while (split >= 0) {
+          final frame = _parseSse(buffer.substring(0, split));
+          buffer = buffer.substring(split + 2);
+          if (frame != null) yield frame;
+          split = buffer.indexOf('\n\n');
+        }
+      }
+    } on SocketException {
+      throw ApiException('Sin conexión.', statusCode: 0);
+    } on TimeoutException {
+      throw ApiException('Sin conexión.', statusCode: 0);
+    } on http.ClientException {
+      throw ApiException('Sin conexión.', statusCode: 0);
+    } finally {
+      client.close();
+    }
+  }
+
+  Map<String, dynamic>? _parseSse(String chunk) {
+    var event = 'message';
+    final data = <String>[];
+    for (final raw in chunk.split('\n')) {
+      final line = raw.replaceAll('\r', '');
+      if (line.startsWith('event:')) {
+        event = line.substring(6).trim();
+      } else if (line.startsWith('data:')) {
+        data.add(line.substring(5).trimLeft());
+      }
+    }
+    if (data.isEmpty || event == 'ping') return null;
+    if (event == 'ready') return {'event': 'ready'};
+    if (event != 'note') return null;
+    try {
+      final decoded = jsonDecode(data.join('\n'));
+      if (decoded is Map<String, dynamic>) {
+        decoded['event'] = 'note';
+        return decoded;
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<List<Note>> listNotes({bool archived = false}) async {
