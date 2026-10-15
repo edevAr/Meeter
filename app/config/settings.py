@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     openai_transcription_model: str = "whisper-1"
     allow_cloud_transcription: bool = False
 
+    diarization_provider: str = "clustering"
+    pyannote_model: str = "pyannote/speaker-diarization-3.1"
+    hf_token: str = ""
+
     database_url: str = "sqlite:///./data/app.db"
 
     recordings_path: Path = Path("./data/recordings")

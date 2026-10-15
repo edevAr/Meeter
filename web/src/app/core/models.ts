@@ -91,6 +91,7 @@ export interface Analysis {
   participants: string[];
   key_topics: string[];
   decisions: string[];
+  action_items?: Array<{ task: string; owner: string | null; due_date: string | null; priority: Priority }>;
 }
 
 export interface Meta {

@@ -8,7 +8,7 @@ from app.domain.models.enums import AudioSourceType, RecordingStatus
 from app.application.services.recording_service import RecordingService
 from app.infrastructure.audio.recorder import RecordingResult
 from app.infrastructure.audio.wav_writer import write_silence_wav
-from tests.conftest import FakeDiarization, FakeTranscriptionProvider
+from tests.conftest import FakeDiarization, FakeTranscriptionProvider, SpeakerFakeDiarization
 
 
 @pytest.mark.asyncio
@@ -39,3 +39,23 @@ async def test_missing_recording(uow_factory, settings: Settings) -> None:
     )
     with pytest.raises(KeyError):
         await service.transcribe("missing")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_aligns_speakers(uow_factory, settings: Settings) -> None:
+    recordings = RecordingService(uow_factory, settings)
+    wav = settings.recordings_path / "duo.wav"
+    write_silence_wav(wav, 0.3)
+    recording = recordings.create_from_capture(
+        RecordingResult(path=wav, duration_seconds=0.3, bytes_written=wav.stat().st_size),
+        "Duo",
+        AudioSourceType.MICROPHONE,
+    )
+    service = TranscriptionService(
+        uow_factory, FakeTranscriptionProvider(), SpeakerFakeDiarization(), settings.max_recording_bytes
+    )
+    transcript = await service.transcribe(recording.id, language="en")
+    assert transcript.segments[0].speaker == "SPEAKER_01"
+    assert transcript.segments[1].speaker == "SPEAKER_02"
+    assert "SPEAKER_01" in transcript.text
+    assert "SPEAKER_02" in transcript.text

@@ -25,13 +25,57 @@ import { Analysis, Recording, Transcript } from '../../core/models';
         }
         <article class="mt-6 rounded-3xl border border-line bg-card p-5">
           <h3 class="font-semibold text-[15px]">Transcripción</h3>
-          <p class="mt-2 whitespace-pre-wrap text-[13px] text-mist leading-6">{{ transcript()?.text || 'Aún no hay texto.' }}</p>
+          @if (transcript()?.segments?.length) {
+            <div class="mt-3 space-y-3">
+              @for (seg of transcript()!.segments; track seg.id) {
+                <p class="text-[13px] leading-6">
+                  <span class="font-semibold text-snow">{{ seg.speaker || 'SPEAKER' }}</span>
+                  <span class="ml-2 text-[11px] text-mist">{{ clock(seg.start_time) }}</span>
+                  <span class="mt-0.5 block text-mist whitespace-pre-wrap">{{ seg.text }}</span>
+                </p>
+              }
+            </div>
+          } @else {
+            <p class="mt-2 whitespace-pre-wrap text-[13px] text-mist leading-6">{{ transcript()?.text || 'Aún no hay texto.' }}</p>
+          }
         </article>
         <article class="mt-3 rounded-3xl border border-line bg-card p-5">
           <h3 class="font-semibold text-[15px]">Resumen</h3>
           <p class="mt-2 text-[13px] leading-6">{{ analysis()?.summary || 'Analiza la llamada para obtener un brief.' }}</p>
+          @if (analysis()?.participants?.length) {
+            <p class="mt-4 text-sm text-mist">Participantes: {{ analysis()?.participants?.join(', ') }}</p>
+          }
           @if (analysis()?.key_topics?.length) {
-            <p class="mt-4 text-sm text-mist">Temas: {{ analysis()?.key_topics?.join(', ') }}</p>
+            <p class="mt-2 text-sm text-mist">Temas: {{ analysis()?.key_topics?.join(', ') }}</p>
+          }
+        </article>
+        <article class="mt-3 rounded-3xl border border-line bg-card p-5">
+          <h3 class="font-semibold text-[15px]">Decisiones</h3>
+          @if (analysis()?.decisions?.length) {
+            <ul class="mt-2 list-disc space-y-1 pl-5 text-[13px] leading-6">
+              @for (item of analysis()!.decisions; track item) {
+                <li>{{ item }}</li>
+              }
+            </ul>
+          } @else {
+            <p class="mt-2 text-[13px] text-mist">Todavía no hay decisiones extraídas.</p>
+          }
+        </article>
+        <article class="mt-3 rounded-3xl border border-line bg-card p-5">
+          <h3 class="font-semibold text-[15px]">Tareas</h3>
+          @if (analysis()?.action_items?.length) {
+            <ul class="mt-2 list-disc space-y-1 pl-5 text-[13px] leading-6">
+              @for (item of analysis()!.action_items; track item.task) {
+                <li>
+                  {{ item.task }}
+                  @if (item.owner) {
+                    <span class="text-mist"> · {{ item.owner }}</span>
+                  }
+                </li>
+              }
+            </ul>
+          } @else {
+            <p class="mt-2 text-[13px] text-mist">Todavía no hay tareas extraídas.</p>
           }
         </article>
       }
@@ -51,6 +95,13 @@ export class RecordingDetailPage {
     if (id) this.load(id);
   }
 
+  clock(seconds: number): string {
+    const total = Math.max(0, Math.round(seconds || 0));
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+  }
+
   load(id: string): void {
     this.api.get(id).subscribe((item) => this.recording.set(item));
     this.api.transcript(id).subscribe({
@@ -66,7 +117,7 @@ export class RecordingDetailPage {
   transcribe(): void {
     const id = this.recording()?.id;
     if (!id) return;
-    this.message.set('Transcribiendo…');
+    this.message.set('Transcribiendo y separando hablantes…');
     this.api.transcribe(id).subscribe({
       next: (item) => {
         this.transcript.set(item);
@@ -79,7 +130,7 @@ export class RecordingDetailPage {
   analyze(): void {
     const id = this.recording()?.id;
     if (!id) return;
-    this.message.set('Analizando…');
+    this.message.set('Qwen3 está sacando el resumen, las decisiones y las tareas…');
     this.api.analyze(id).subscribe({
       next: (item) => {
         this.analysis.set(item);

@@ -22,6 +22,12 @@ def test_live_faster_whisper_is_greedy_and_not_conditioned() -> None:
     assert opts["without_timestamps"] is True
 
 
+def test_batch_faster_whisper_skips_timestamp_tokens() -> None:
+    opts = faster_whisper_decode_options(live=False, language="auto")
+    assert opts["without_timestamps"] is True
+    assert opts["word_timestamps"] is False
+
+
 def test_batch_faster_whisper_stays_greedy_on_cpu() -> None:
     opts = faster_whisper_decode_options(live=False, language="auto")
     assert opts["language"] is None

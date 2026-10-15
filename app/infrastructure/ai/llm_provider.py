@@ -40,7 +40,7 @@ class LLMAnalysisProvider(AIProvider):
                 action_items=[],
                 participants=[],
             )
-        if not self.api_key and self.name not in {"ollama"}:
+        if not self.api_key and self.name not in {"ollama", "qwen", "qwen3"}:
             raise AIProviderError(
                 "No AI API key configured. Set AI_API_KEY in .env or Settings. "
                 "Keys are never stored in the database."
@@ -81,26 +81,25 @@ class LLMAnalysisProvider(AIProvider):
         user = build_user_prompt(transcript, title)
         if extra_instruction:
             user = extra_instruction + "\n\n" + user
+        qwen = self.name in {"qwen", "qwen3"} or "qwen" in (self.model or "").lower()
+        create_kwargs: dict = {
+            "model": self.model,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": user},
+            ],
+        }
+        if qwen:
+            create_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         try:
-            response = await client.chat.completions.create(
-                model=self.model,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                    {"role": "user", "content": user},
-                ],
-            )
+            response = await client.chat.completions.create(**create_kwargs)
         except Exception:
+            create_kwargs.pop("response_format", None)
+            create_kwargs.pop("extra_body", None)
             try:
-                response = await client.chat.completions.create(
-                    model=self.model,
-                    temperature=0.1,
-                    messages=[
-                        {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                        {"role": "user", "content": user},
-                    ],
-                )
+                response = await client.chat.completions.create(**create_kwargs)
             except Exception as exc:
                 raise AIProviderError("AI provider request failed") from exc
         choice = response.choices[0].message.content if response.choices else None

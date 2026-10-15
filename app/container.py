@@ -21,8 +21,8 @@ from app.application.services.transcription_service import TranscriptionService
 from app.config.settings import Settings, get_settings
 from app.domain.interfaces.ai import AIProvider
 from app.domain.interfaces.transcription import TranscriptionProvider
-from app.infrastructure.ai.diarization import NullSpeakerDiarizationProvider
 from app.infrastructure.ai.factory import create_ai_provider
+from app.infrastructure.diarization.factory import create_diarization_provider
 from app.infrastructure.database.repositories import SqlAlchemyUnitOfWork
 from app.infrastructure.database.session import (
     create_engine_from_settings,
@@ -65,12 +65,13 @@ def build_container(settings: Settings | None = None) -> AppContainer:
         return SqlAlchemyUnitOfWork(session_factory)
 
     transcription = create_transcription_provider(settings)
+    diarization = create_diarization_provider(settings)
     ai = create_ai_provider(settings)
     recordings = RecordingService(uow_factory, settings)
     transcriptions = TranscriptionService(
         uow_factory,
         transcription,
-        NullSpeakerDiarizationProvider(),
+        diarization,
         settings.max_recording_bytes,
     )
     analysis = AIAnalysisService(uow_factory, ai)

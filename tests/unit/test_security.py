@@ -36,6 +36,12 @@ def test_parse_fenced_and_repaired_json() -> None:
     assert result.key_topics == ["A"]
 
 
+def test_parse_strips_qwen_think_blocks() -> None:
+    raw = "<think>razonando</think>\n{\"summary\": \"Ok\", \"key_topics\": [], \"decisions\": [], \"action_items\": []}"
+    result = parse_analysis_payload(raw)
+    assert result.summary == "Ok"
+
+
 def test_parse_rejects_empty() -> None:
     with pytest.raises(AnalysisParseError):
         parse_analysis_payload("")

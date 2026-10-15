@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from app.api.deps import get_container
 from app.api.schemas import (
+    AnalysisActionOut,
     AnalysisOut,
     MessageOut,
     NoteOut,
@@ -20,6 +21,7 @@ from app.api.schemas import (
 )
 from app.container import AppContainer
 from app.domain.interfaces.export import ExportFormat
+from app.domain.models.action_item import ActionItem
 from app.domain.models.analysis import MeetingAnalysis
 from app.domain.models.enums import AudioSourceType, RecordingStatus
 from app.domain.models.recording import Recording
@@ -70,7 +72,7 @@ def transcript_out(item: Transcript) -> TranscriptOut:
     )
 
 
-def analysis_out(item: MeetingAnalysis) -> AnalysisOut:
+def analysis_out(item: MeetingAnalysis, action_items: list[ActionItem] | None = None) -> AnalysisOut:
     return AnalysisOut(
         id=item.id,
         recording_id=item.recording_id,
@@ -82,6 +84,15 @@ def analysis_out(item: MeetingAnalysis) -> AnalysisOut:
         participants=item.participants,
         key_topics=[t.topic for t in item.key_topics],
         decisions=[d.text for d in item.decisions],
+        action_items=[
+            AnalysisActionOut(
+                task=entry.task,
+                owner=entry.owner,
+                due_date=entry.due_date,
+                priority=entry.priority,
+            )
+            for entry in action_items or []
+        ],
     )
 
 
@@ -212,7 +223,7 @@ async def analyze_recording(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail="AI analysis failed") from exc
-    return analysis_out(analysis)
+    return analysis_out(analysis, container.action_items.for_recording(recording_id))
 
 
 @router.get("/{recording_id}/analysis", response_model=AnalysisOut)
@@ -220,7 +231,7 @@ def get_analysis(recording_id: str, container: AppContainer = Depends(get_contai
     analysis = container.analysis.get_for_recording(recording_id)
     if analysis is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    return analysis_out(analysis)
+    return analysis_out(analysis, container.action_items.for_recording(recording_id))
 
 
 @router.post("/{recording_id}/notes", status_code=201)

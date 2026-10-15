@@ -43,7 +43,6 @@ def _cpu_threads() -> int:
 
 def faster_whisper_decode_options(*, live: bool, language: str | None) -> dict:
     """Decode settings. CPU Docker cannot run beam search without stalling the API."""
-    del live
     lang = None if not language or language in {"auto", "", "None"} else language
     return {
         "language": lang,
@@ -55,6 +54,8 @@ def faster_whisper_decode_options(*, live: bool, language: str | None) -> dict:
         # hundreds of tiny windows; each one ran a full Whisper pass and the
         # extract lock never came back.
         "vad_filter": False,
+        # Timestamp tokens on CPU stall a 43s clip for 7+ minutes. Segment
+        # start/end still come from the 30s decode windows.
         "without_timestamps": True,
         "word_timestamps": False,
         "chunk_length": _CHUNK_SECONDS,
@@ -74,7 +75,6 @@ def openai_whisper_decode_options(*, live: bool, language: str | None) -> dict:
     }
     if language and language not in {"auto", "", "None"}:
         kwargs["language"] = language
-    del live
     return kwargs
 
 
@@ -227,6 +227,10 @@ def decode_audio_file(path: str):
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-probesize",
+                "65536",
+                "-analyzeduration",
+                "1000000",
                 "-fflags",
                 "+genpts+discardcorrupt",
                 "-err_detect",
@@ -401,6 +405,19 @@ class WhisperTranscriptionProvider(TranscriptionProvider):
         logger.info("Transcription completed live=%s", live)
         return result
 
+    async def transcribe_samples(
+        self,
+        audio,
+        language: str | None = None,
+        progress_callback: callable | None = None,
+    ) -> TranscriptResult:
+        if progress_callback:
+            progress_callback(5)
+        result = await asyncio.to_thread(self._transcribe_audio, audio, language, False)
+        if progress_callback:
+            progress_callback(100)
+        return result
+
 
 class FasterWhisperTranscriptionProvider(TranscriptionProvider):
     name = "faster-whisper"
@@ -549,6 +566,19 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
         logger.info("Transcription started live=%s pcm_s=%.2f", live, len(audio) / 16000)
         result = await asyncio.to_thread(self._transcribe_audio, audio, language, live)
         logger.info("Transcription completed live=%s", live)
+        return result
+
+    async def transcribe_samples(
+        self,
+        audio,
+        language: str | None = None,
+        progress_callback: callable | None = None,
+    ) -> TranscriptResult:
+        if progress_callback:
+            progress_callback(5)
+        result = await asyncio.to_thread(self._transcribe_audio, audio, language, False)
+        if progress_callback:
+            progress_callback(100)
         return result
 
 

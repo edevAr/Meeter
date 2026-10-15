@@ -9,6 +9,7 @@ export interface LiveSession {
 
 export interface LiveStartOptions {
   internalAudio?: boolean;
+  voice?: boolean;
 }
 
 export function microphoneErrorMessage(error: unknown, voice = false): string {
@@ -52,7 +53,8 @@ function microphoneBlockedReason(): string | null {
 @Injectable({ providedIn: 'root' })
 export class LiveCaptureService {
   async start(_onPartial: (text: string) => void = () => undefined, options: LiveStartOptions = {}): Promise<LiveSession> {
-    const mic = await openMicrophone(!options.internalAudio);
+    const voice = Boolean(options.voice);
+    const mic = await openMicrophone(voice ? 'voice' : options.internalAudio ? 'default' : 'room');
     const speaker = options.internalAudio ? await openSpeakerAudio() : null;
 
     let audioContext: AudioContext | null = null;
@@ -84,6 +86,13 @@ export class LiveCaptureService {
         mix.disconnect();
         dest.stream.getTracks().forEach((track) => track.stop());
       });
+    } else if (voice) {
+      const cleaned = enhanceVoiceStream(mic);
+      if (cleaned) {
+        audioContext = cleaned.context;
+        recordStream = cleaned.stream;
+        extraStops.push(cleaned.stop);
+      }
     }
 
     const recorder = this.makeRecorder(recordStream);
@@ -153,18 +162,23 @@ export class LiveCaptureService {
   }
 }
 
-async function openMicrophone(room = false): Promise<MediaStream> {
+async function openMicrophone(mode: 'voice' | 'room' | 'default' = 'default'): Promise<MediaStream> {
   const blocked = microphoneBlockedReason();
   if (blocked) throw new Error(blocked);
 
-  const attempts: MediaStreamConstraints[] = [{ audio: true }];
-  if (room) {
-    attempts.push({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  } else {
-    attempts.push({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
-  }
+  const attempts: MediaStreamConstraints[] =
+    mode === 'voice'
+      ? [
+          { audio: voiceConstraints(true) },
+          { audio: voiceConstraints(false) },
+          { audio: true },
+        ]
+      : mode === 'room'
+        ? [
+            { audio: true },
+            { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } },
+          ]
+        : [{ audio: true }, { audio: voiceConstraints(false) }];
 
   let lastError: unknown;
   for (const constraints of attempts) {
@@ -172,21 +186,27 @@ async function openMicrophone(room = false): Promise<MediaStream> {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const track = stream.getAudioTracks().find((item) => item.readyState !== 'ended') ?? stream.getAudioTracks()[0];
       if (track) {
-        if (room) {
-          try {
-            track.contentHint = 'music';
-          } catch {
-            /* ignore */
-          }
-          try {
+        try {
+          track.contentHint = mode === 'room' ? 'music' : 'speech';
+        } catch {
+          /* ignore */
+        }
+        try {
+          if (mode === 'room') {
             await track.applyConstraints({
               echoCancellation: false,
               noiseSuppression: false,
               autoGainControl: false,
             });
-          } catch {
-            /* ignore */
+          } else {
+            await track.applyConstraints({
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            });
           }
+        } catch {
+          /* browser may ignore some processing flags */
         }
         return stream;
       }
@@ -196,6 +216,57 @@ async function openMicrophone(room = false): Promise<MediaStream> {
     }
   }
   throw lastError instanceof Error ? lastError : new Error('No se pudo abrir el micrófono');
+}
+
+function voiceConstraints(isolation: boolean): MediaTrackConstraints {
+  const audio: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  };
+  if (isolation) {
+    (audio as MediaTrackConstraints & { voiceIsolation?: boolean }).voiceIsolation = true;
+  }
+  return audio;
+}
+
+function enhanceVoiceStream(mic: MediaStream): { context: AudioContext; stream: MediaStream; stop: () => void } | null {
+  try {
+    const context = new AudioContext();
+    if (context.state === 'suspended') void context.resume();
+    const source = context.createMediaStreamSource(mic);
+    const highpass = context.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = 85;
+    highpass.Q.value = 0.7;
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = -26;
+    compressor.knee.value = 12;
+    compressor.ratio.value = 3;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.16;
+    const dest = context.createMediaStreamDestination();
+    source.connect(highpass);
+    highpass.connect(compressor);
+    compressor.connect(dest);
+    return {
+      context,
+      stream: dest.stream,
+      stop: () => {
+        try {
+          source.disconnect();
+          highpass.disconnect();
+          compressor.disconnect();
+        } catch {
+          /* already torn down */
+        }
+        dest.stream.getTracks().forEach((track) => track.stop());
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function openSpeakerAudio(): Promise<MediaStream | null> {

@@ -14,10 +14,11 @@ class AnalysisParseError(ValueError):
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
 
 
 def extract_json_object(raw: str) -> dict[str, Any]:
-    text = (raw or "").strip()
+    text = _THINK_RE.sub("", raw or "").strip()
     if not text:
         raise AnalysisParseError("Empty model response")
     fenced = _FENCE_RE.search(text)

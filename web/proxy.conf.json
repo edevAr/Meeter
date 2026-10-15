@@ -1,4 +1,18 @@
 {
+  "/api/health": {
+    "target": "http://127.0.0.1:8001",
+    "secure": false,
+    "changeOrigin": true,
+    "timeout": 8000,
+    "proxyTimeout": 8000
+  },
+  "/api/notes/events": {
+    "target": "http://127.0.0.1:8001",
+    "secure": false,
+    "changeOrigin": true,
+    "timeout": 0,
+    "proxyTimeout": 0
+  },
   "/api": {
     "target": "http://127.0.0.1:8001",
     "secure": false,

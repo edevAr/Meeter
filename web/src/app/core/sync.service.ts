@@ -1,6 +1,6 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, effect, inject, signal, untracked } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, timeout } from 'rxjs';
 
 import { AuthService } from './auth.service';
 import { API_BASE } from './config';
@@ -93,6 +93,7 @@ export class SyncService {
     queue.deletes = queue.deletes.filter((id) => id !== note.id);
     queue.upserts[note.id] = {
       ...note,
+      recording_id: note.recording_id?.startsWith('local:') ? null : note.recording_id,
       updated_at: note.updated_at || new Date().toISOString(),
     };
     this.write(queue);
@@ -168,7 +169,7 @@ export class SyncService {
 
   private async ping(): Promise<void> {
     try {
-      await firstValueFrom(this.http.get(`${API_BASE}/api/health`));
+      await firstValueFrom(this.http.get(`${API_BASE}/api/health`).pipe(timeout(4000)));
       this.online.set(true);
       if (!this.live()) this.connect();
       if (this.pendingCount() && this.holdCount === 0) void this.flush();
@@ -220,7 +221,7 @@ export class SyncService {
         signal: controller.signal,
       });
       if (!response.ok || !response.body) {
-        if (response.status !== 401) this.online.set(false);
+        this.live.set(false);
         this.scheduleReconnect();
         return;
       }
@@ -232,7 +233,6 @@ export class SyncService {
     } catch (error) {
       if (controller.signal.aborted) return;
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        this.online.set(false);
         this.live.set(false);
         this.scheduleReconnect();
       }
@@ -294,7 +294,11 @@ export class SyncService {
         const pulled = await this.postSync([]);
         if (!pulled) return null;
         this.forgetStale(pulled);
-        this.lastPull.set(pulled);
+        if (!this.pendingCount()) {
+          this.lastPull.set(pulled);
+          this.online.set(true);
+          return pulled;
+        }
       }
       const snapshot = this.queue();
       const remaining = Object.keys(snapshot.upserts).length + snapshot.deletes.length;
@@ -325,7 +329,9 @@ export class SyncService {
       this.online.set(true);
       return result.notes ?? [];
     } catch (error) {
-      if (!(error instanceof HttpErrorResponse && error.status === 401)) this.online.set(false);
+      if (error instanceof HttpErrorResponse && (error.status === 0 || error.status >= 500)) {
+        this.online.set(false);
+      }
       return null;
     }
   }

@@ -8,6 +8,7 @@ from app.domain.models.action_item import ActionItem
 from app.domain.models.analysis import Decision, KeyTopic, MeetingAnalysis
 from app.domain.models.enums import RecordingStatus
 from app.infrastructure.ai.llm_provider import AIProviderError
+from app.infrastructure.transcription.alignment import format_speaker_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ class AIAnalysisService:
             if not recording.status.can_analyze and recording.status != RecordingStatus.FAILED:
                 raise AIProviderError("Recording is not ready for AI analysis")
             title = recording.title
-            text = transcript.text
+            text = format_speaker_transcript(transcript.segments, fallback=transcript.text)
+            speakers = sorted({seg.speaker for seg in transcript.segments if seg.speaker})
             transcript_id = transcript.id
             recording.status = RecordingStatus.ANALYZING
             recording.error_message = None
@@ -42,6 +44,8 @@ class AIAnalysisService:
 
         try:
             result = await self._provider.analyze(text, title=title)
+            if not result.participants and speakers:
+                result.participants = speakers
         except Exception as exc:
             with self._uow_factory() as uow:
                 recording = uow.recordings.get(recording_id)

@@ -77,6 +77,17 @@ class FakeDiarization(SpeakerDiarizationProvider):
         return []
 
 
+class SpeakerFakeDiarization(SpeakerDiarizationProvider):
+    name = "fake-diarization"
+
+    async def identify_speakers(self, audio_path: str) -> list[SpeakerTurn]:
+        del audio_path
+        return [
+            SpeakerTurn(0.0, 2.5, "A"),
+            SpeakerTurn(2.5, 6.0, "B"),
+        ]
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     recordings = tmp_path / "recordings"

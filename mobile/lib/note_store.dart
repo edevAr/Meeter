@@ -150,7 +150,8 @@ class NoteStore extends ChangeNotifier {
       online = true;
       _applyRemote(result);
     } on ApiException catch (error) {
-      if (error.statusCode != 401) online = false;
+      final code = error.statusCode ?? 0;
+      if (code == 0 || code >= 500) online = false;
     } catch (_) {
       online = false;
     } finally {

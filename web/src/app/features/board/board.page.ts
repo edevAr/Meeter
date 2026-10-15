@@ -2,7 +2,6 @@ import { NgClass } from '@angular/common';
 import { AfterViewInit, Component, ElementRef, HostListener, OnDestroy, ViewChild, computed, effect, inject, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { HttpErrorResponse } from '@angular/common/http';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { firstValueFrom } from 'rxjs';
 
 import { NotesService } from '../../core/notes.service';
@@ -11,11 +10,13 @@ import { RecordingsApi } from '../../core/recordings.service';
 import { AuthService } from '../../core/auth.service';
 import { PrefsService } from '../../core/prefs.service';
 import { SyncService } from '../../core/sync.service';
+import { isLocalRecordingId, localRecordingId, PendingAudioService } from '../../core/pending-audio.service';
 import { Note, NoteShare } from '../../core/models';
-import { applyList, isRichHtml, offsetsFromRange, rangeFromOffsets, sanitizeRich, stripHtml, wrapSelection } from './rich-text';
+import { applyList, isRichHtml, NoteRichHtmlDirective, offsetsFromRange, rangeFromOffsets, sanitizeRich, stripHtml, toggleSecret, toggleStrike, wrapSelection } from './rich-text';
 
 const IMAGE_MARK = '<!--meeter-images:';
 const MARK_MARK = '<!--meeter-marks:';
+const VOICE_MARK = '<!--meeter-voice:';
 const NOTE_W = 180;
 const NOTE_H = 204;
 const NOTE_COLORS = [
@@ -80,7 +81,7 @@ type NoteMark = {
 
 @Component({
   selector: 'app-board-page',
-  imports: [FormsModule, NgClass],
+  imports: [FormsModule, NgClass, NoteRichHtmlDirective],
   template: `
     <section class="cork-workspace relative h-screen overflow-hidden">
       <div class="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/35 to-transparent"></div>
@@ -95,6 +96,8 @@ type NoteMark = {
         <div class="mt-1 flex items-start gap-2">
           @if (!sync.online()) {
             <p class="sync-pill is-off">{{ t('sync.offline') }}</p>
+          } @else if (pendingAudio.pending()) {
+            <p class="sync-pill">{{ t('sync.audioPending') }}</p>
           } @else if (sync.syncing() || sync.pending()) {
             <p class="sync-pill">{{ t('sync.pending') }}</p>
           }
@@ -426,12 +429,15 @@ type NoteMark = {
               autocomplete="off"
               [readonly]="!canEdit(note)"
             />
-            @if (note.recording_id) {
+            @if (note.recording_id || isOrphanVoice(note)) {
               <div
                 class="note-voice-block"
                 (pointerdown)="$event.stopPropagation()"
                 (click)="$event.stopPropagation()"
               >
+                @if (!note.recording_id) {
+                  <p class="note-voice-status">El audio no se llegó a guardar. No hay archivo para reproducir.</p>
+                } @else {
                 <div class="note-voice">
                 <button
                   type="button"
@@ -450,14 +456,6 @@ type NoteMark = {
                       <path d="M8 5.5v13l11-6.5-11-6.5z"/>
                     </svg>
                   }
-                </button>
-                <button
-                  type="button"
-                  class="note-voice-bar"
-                  title="Posición"
-                  (click)="seekVoice($event, note)"
-                >
-                  <i [style.width.%]="voiceProgress(note)"></i>
                 </button>
                 <span class="note-voice-time">{{ voiceClock(note) }}</span>
                 <button
@@ -485,9 +483,34 @@ type NoteMark = {
                     }
                   </button>
                 }
+                <label class="note-voice-seek" (pointerdown)="$event.stopPropagation()">
+                  <span class="note-voice-track" aria-hidden="true">
+                    <i [style.width.%]="voiceFillPct(note)"></i>
+                    <b [style.left.%]="voiceFillPct(note)"></b>
+                  </span>
+                  <input
+                    type="range"
+                    class="note-voice-slider"
+                    min="0"
+                    step="0.1"
+                    [max]="voiceMax(note) || 1"
+                    [value]="voicePosition(note)"
+                    [attr.aria-label]="'Posición de la nota de voz'"
+                    [attr.aria-valuetext]="voiceClock(note)"
+                    title="Arrastra para adelantar o retroceder"
+                    (pointerdown)="beginVoiceScrub(note, $event)"
+                    (input)="onVoiceSeek(note, $event)"
+                    (change)="endVoiceScrub()"
+                    (pointerup)="endVoiceScrub()"
+                    (pointercancel)="endVoiceScrub()"
+                  />
+                </label>
                 </div>
                 @if (isVoiceTranscribing(note)) {
                   <p class="note-voice-status">Extrayendo el texto…</p>
+                } @else if (isPendingVoice(note)) {
+                  <p class="note-voice-status">{{ t('sync.audioPending') }}</p>
+                }
                 }
               </div>
             }
@@ -515,18 +538,17 @@ type NoteMark = {
                     }
                   </div>
                 }
-                @if (isRichEditing(note)) {
+                @if (usesRichBody(note)) {
                   <div
                     class="note-canvas-text note-rich-html font-note text-[12px] leading-5 text-[#3b2a12] outline-none"
                     [attr.id]="'note-rich-' + note.id"
-                    contenteditable="true"
+                    [attr.contenteditable]="canEdit(note) ? 'true' : 'false'"
+                    [noteRichHtml]="richHtml(note)"
+                    (focus)="beginEdit(note)"
                     (input)="onRichInput(note, $event)"
                     (paste)="onRichPaste($event)"
-                  ></div>
-                } @else if (isRich(note)) {
-                  <div
-                    class="note-canvas-text note-rich-html font-note text-[12px] leading-5 text-[#3b2a12]"
-                    [innerHTML]="safeRich(note)"
+                    (pointerdown)="onRichCheckClick($event, note)"
+                    (keyup)="onNoteTextSelect(note)"
                   ></div>
                 } @else {
                   <textarea
@@ -536,6 +558,7 @@ type NoteMark = {
                     [attr.id]="'note-body-' + note.id"
                     [ngModel]="textOf(note)"
                     (ngModelChange)="setText(note, $event)"
+                    (keyup)="onNoteTextSelect(note)"
                     [placeholder]="note.recording_id ? 'Pulsa el botón de texto para extraer lo que dijiste.' : 'Escribe, pega o arrastra una imagen…'"
                     [readonly]="!canEdit(note)"
                   ></textarea>
@@ -595,7 +618,8 @@ type NoteMark = {
                 <div class="note-drop-hint">Suelta la imagen</div>
               }
             </div>
-            <div class="mt-1 flex items-center gap-0.5">
+            <div class="note-foot">
+              <div class="flex items-center gap-0.5">
               @for (level of priorities; track level) {
                 <button
                   type="button"
@@ -608,6 +632,8 @@ type NoteMark = {
                   {{ level }}
                 </button>
               }
+              </div>
+              <time class="note-created" [attr.datetime]="note.created_at">{{ noteCreatedClock(note) }}</time>
             </div>
             @if (canShare(note)) {
               <div class="note-share-wrap">
@@ -797,6 +823,7 @@ type NoteMark = {
                         }
                       }
                     </p>
+                    <time class="note-created is-stack" [attr.datetime]="note.created_at">{{ noteCreatedClock(note) }}</time>
                     <button
                       type="button"
                       class="mt-3 self-start rounded-full bg-[#4f7a5a] px-3 py-1 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white"
@@ -887,6 +914,7 @@ type NoteMark = {
                         }
                       }
                     </p>
+                    <time class="note-created is-stack" [attr.datetime]="note.created_at">{{ noteCreatedClock(note) }}</time>
                     <button
                       type="button"
                       class="mt-3 self-start rounded-full bg-[#4f7a5a] px-3 py-1 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white"
@@ -1068,8 +1096,11 @@ type NoteMark = {
                 }
               </div>
             </div>
-            @if (note.recording_id) {
+            @if (note.recording_id || isOrphanVoice(note)) {
               <div class="note-voice-block">
+                @if (!note.recording_id) {
+                  <p class="note-voice-status">El audio no se llegó a guardar. No hay archivo para reproducir.</p>
+                } @else {
                 <div class="note-voice is-wide">
                 <button
                   type="button"
@@ -1088,14 +1119,6 @@ type NoteMark = {
                       <path d="M8 5.5v13l11-6.5-11-6.5z"/>
                     </svg>
                   }
-                </button>
-                <button
-                  type="button"
-                  class="note-voice-bar"
-                  title="Posición"
-                  (click)="seekVoice($event, note)"
-                >
-                  <i [style.width.%]="voiceProgress(note)"></i>
                 </button>
                 <span class="note-voice-time">{{ voiceClock(note) }}</span>
                 <button
@@ -1120,9 +1143,34 @@ type NoteMark = {
                     }
                   </button>
                 }
+                <label class="note-voice-seek" (pointerdown)="$event.stopPropagation()">
+                  <span class="note-voice-track" aria-hidden="true">
+                    <i [style.width.%]="voiceFillPct(note)"></i>
+                    <b [style.left.%]="voiceFillPct(note)"></b>
+                  </span>
+                  <input
+                    type="range"
+                    class="note-voice-slider"
+                    min="0"
+                    step="0.1"
+                    [max]="voiceMax(note) || 1"
+                    [value]="voicePosition(note)"
+                    [attr.aria-label]="'Posición de la nota de voz'"
+                    [attr.aria-valuetext]="voiceClock(note)"
+                    title="Arrastra para adelantar o retroceder"
+                    (pointerdown)="beginVoiceScrub(note, $event)"
+                    (input)="onVoiceSeek(note, $event)"
+                    (change)="endVoiceScrub()"
+                    (pointerup)="endVoiceScrub()"
+                    (pointercancel)="endVoiceScrub()"
+                  />
+                </label>
                 </div>
                 @if (isVoiceTranscribing(note)) {
                   <p class="note-voice-status">Whisper está sacando el texto de la grabación…</p>
+                } @else if (isPendingVoice(note)) {
+                  <p class="note-voice-status">{{ t('sync.audioPending') }}</p>
+                }
                 }
               </div>
             }
@@ -1137,18 +1185,17 @@ type NoteMark = {
                 [style.minWidth.px]="canvasExtent(note).w || null"
                 [style.minHeight.px]="canvasExtent(note).h || null"
               >
-                @if (isRichEditing(note)) {
+                @if (usesRichBody(note)) {
                   <div
                     class="note-canvas-text note-rich-html bg-transparent font-note text-[14px] leading-6 text-[#3b2a12] outline-none"
                     [attr.id]="'note-rich-exp-' + note.id"
-                    contenteditable="true"
+                    [attr.contenteditable]="canEdit(note) ? 'true' : 'false'"
+                    [noteRichHtml]="richHtml(note)"
+                    (focus)="beginEdit(note)"
                     (input)="onRichInput(note, $event)"
                     (paste)="onRichPaste($event)"
-                  ></div>
-                } @else if (isRich(note)) {
-                  <div
-                    class="note-canvas-text note-rich-html bg-transparent font-note text-[14px] leading-6 text-[#3b2a12]"
-                    [innerHTML]="safeRich(note)"
+                    (pointerdown)="onRichCheckClick($event, note)"
+                    (keyup)="onNoteTextSelect(note)"
                   ></div>
                 } @else {
                   <textarea
@@ -1156,6 +1203,7 @@ type NoteMark = {
                     [attr.id]="'note-body-exp-' + note.id"
                     [ngModel]="textOf(note)"
                     (ngModelChange)="setText(note, $event)"
+                    (keyup)="onNoteTextSelect(note)"
                     [placeholder]="note.recording_id ? 'Pulsa Extraer texto para ver lo que dijiste.' : 'Escribe, pega o arrastra una imagen…'"
                     [readonly]="!canEdit(note)"
                   ></textarea>
@@ -1338,6 +1386,7 @@ type NoteMark = {
                 <div class="note-drop-hint">Suelta la imagen</div>
               }
             </div>
+            <time class="note-created is-wide" [attr.datetime]="note.created_at">{{ noteCreatedClock(note) }}</time>
             @if (canShare(note)) {
               <div class="note-share-wrap is-expanded">
                 <button
@@ -1671,9 +1720,23 @@ type NoteMark = {
                 <button type="button" class="rich-bold" title="Negrita" (click)="richCommand('bold')"><b>B</b></button>
                 <button type="button" title="Cursiva" (click)="richCommand('italic')"><i>I</i></button>
                 <button type="button" title="Subrayado" (click)="richCommand('underline')"><u>U</u></button>
-                <button type="button" title="Tachado" (click)="richCommand('strikeThrough')"><s>S</s></button>
+                <button type="button" class="rich-strike" title="Tachar el texto seleccionado" (click)="richCommand('strikeThrough')"><s>S</s></button>
+                <button type="button" class="rich-secret" title="Ocultar o mostrar el texto" (click)="richToggleSecret()">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <path d="M3 3l18 18" stroke-linecap="round"/>
+                    <path d="M10.6 10.6a2 2 0 1 0 2.8 2.8"/>
+                    <path d="M9.9 5.2A9.5 9.5 0 0 1 12 5c4.8 0 8.7 4.2 10 7-.5 1.1-1.4 2.4-2.6 3.6"/>
+                    <path d="M6.7 6.7C4.9 8 3.6 9.7 2 12c1.3 2.8 5.2 7 10 7 1.3 0 2.6-.3 3.8-.8"/>
+                  </svg>
+                </button>
                 <button type="button" title="Lista" (click)="richCommand('insertUnorderedList')">•</button>
                 <button type="button" title="Lista numerada" (click)="richCommand('insertOrderedList')">1.</button>
+                <button type="button" class="rich-check" title="Lista con casillas" (click)="richCommand('insertChecklist')">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <rect x="4" y="4" width="16" height="16" rx="3"/>
+                    <path d="M8 12.2l2.6 2.6L16.4 9" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
                 <select title="Tipografía" (mousedown)="$event.stopPropagation()" (change)="richFont($event)">
                   @for (font of richFonts; track font.id) {
                     <option [value]="font.id" [style.font-family]="font.id">{{ font.label }}</option>
@@ -1697,7 +1760,7 @@ type NoteMark = {
                   }
                 </span>
               </div>
-              <p class="note-flyout-hint">Selecciona texto en la nota y aplica el formato.</p>
+              <p class="note-flyout-hint">Selecciona texto para formatearlo u ocultarlo con xxxxxx.</p>
             }
           </div>
         }
@@ -1808,7 +1871,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   readonly auth = inject(AuthService);
   readonly prefs = inject(PrefsService);
   readonly sync = inject(SyncService);
-  private readonly sanitizer = inject(DomSanitizer);
+  readonly pendingAudio = inject(PendingAudioService);
   readonly accountOpen = signal(false);
   @ViewChild('stage') private stage?: ElementRef<HTMLElement>;
   @ViewChild('trashDock') private trashDock?: ElementRef<HTMLElement>;
@@ -1832,6 +1895,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   readonly voicePlaying = signal(false);
   readonly voiceCurrent = signal(0);
   readonly voiceDuration = signal(0);
+  readonly voiceScrubbing = signal(false);
   readonly voiceTranscribingId = signal<string | null>(null);
   readonly voiceRate = signal(1);
   readonly editingId = signal<string | null>(null);
@@ -2068,6 +2132,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private callStopRequested = false;
   private callRecordingId: string | null = null;
   private voiceAudio: HTMLAudioElement | null = null;
+  private voiceObjectUrl: string | null = null;
+  private voicePendingSeek: number | null = null;
+  private voiceLoadToken = 0;
   private clippyTimer: ReturnType<typeof setTimeout> | null = null;
   private clippySession = false;
   private seenNoteIds: Set<string> | null = null;
@@ -2079,6 +2146,12 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private beepGain: GainNode | null = null;
   private beepPulse: ReturnType<typeof setInterval> | null = null;
   private previewTimer: ReturnType<typeof setTimeout> | null = null;
+  private undoTimer: ReturnType<typeof setTimeout> | null = null;
+  private selectingNoteId: string | null = null;
+  private undoBurstId: string | null = null;
+  private undoApplying = false;
+  private noteUndos = new Map<string, Array<{ title: string; text: string }>>();
+  private noteRedos = new Map<string, Array<{ title: string; text: string }>>();
   private soundingTone: string | null = null;
   private alarmNotified = new Set<string>();
   private followToday = true;
@@ -2193,6 +2266,11 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       if (!event) return;
       untracked(() => this.applyLiveEvent(event));
     });
+    effect(() => {
+      const done = this.pendingAudio.uploaded();
+      if (!done) return;
+      untracked(() => this.attachUploadedAudio(done));
+    });
   }
 
   private static localDayKey(date = new Date()): string {
@@ -2234,6 +2312,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     if (this.clippyTimer) clearTimeout(this.clippyTimer);
     if (this.alarmTimer) clearInterval(this.alarmTimer);
     if (this.previewTimer) clearTimeout(this.previewTimer);
+    if (this.undoTimer) clearTimeout(this.undoTimer);
     this.stopAlarmSound();
     this.stopVoice();
     if (this.callSession) {
@@ -2304,6 +2383,8 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   onDocumentDown(event: PointerEvent): void {
     void this.ensureAudio()?.resume();
     const target = event.target as HTMLElement | null;
+    const editor = target?.closest('.note-canvas-text') as HTMLElement | null;
+    this.selectingNoteId = this.noteIdFromEditor(editor);
     if (this.calendarOpen() && !target?.closest('.date-filter')) this.calendarOpen.set(false);
     if (this.accountOpen() && !target?.closest('.account-wrap')) this.accountOpen.set(false);
     const flyout = this.noteFlyout();
@@ -2531,6 +2612,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
 
   refresh(): void {
     void this.sync.flush();
+    void this.pendingAudio.flush();
   }
 
   private applyRemote(remote: Note[]): void {
@@ -2549,14 +2631,17 @@ export class BoardPage implements AfterViewInit, OnDestroy {
         continue;
       }
       if (local) {
+        const pendingAudio = isLocalRecordingId(local.recording_id) ? local.recording_id : null;
         Object.assign(local, note);
+        if (pendingAudio && !note.recording_id) local.recording_id = pendingAudio;
         merged.push(local);
       } else {
         merged.push(note);
       }
     }
     for (const local of this.notes()) {
-      if (!merged.some((note) => note.id === local.id) && this.sync.isUpsertQueued(local.id)) {
+      if (merged.some((note) => note.id === local.id)) continue;
+      if (this.sync.isUpsertQueued(local.id) || isLocalRecordingId(local.recording_id)) {
         merged.push(local);
       }
     }
@@ -2631,7 +2716,10 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.callTick.set(0);
     this.armCallClock();
     try {
-      const session = await this.liveCapture.start(() => undefined, { internalAudio });
+      const session = await this.liveCapture.start(() => undefined, {
+        internalAudio,
+        voice: this.voiceCapture(),
+      });
       if (generation !== this.callGeneration) {
         await session.stop();
         return;
@@ -2693,6 +2781,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.callBusy.set(true);
     try {
       const result = await session.stop();
+      let voiceNoteId = '';
       if (result.blob.size) {
         const type = result.blob.type || 'audio/webm';
         const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a' : 'webm';
@@ -2702,18 +2791,24 @@ export class BoardPage implements AfterViewInit, OnDestroy {
           { type },
         );
         const title = voice ? `Nota de voz ${this.dateLabel()}` : `Llamada ${this.dateLabel()}`;
-        try {
-          const recording = await firstValueFrom(
-            this.recordingsApi.upload(file, title, result.durationSeconds),
-          );
-          this.callRecordingId = recording.id;
-        } catch (error) {
-          console.error('No se pudo subir el audio', error);
-          if (!voice) throw error;
+        voiceNoteId = voice ? this.newNoteId() : '';
+        const recordingId = await this.saveOrQueueAudio(file, title, result.durationSeconds, voiceNoteId);
+        this.callRecordingId = recordingId;
+        if (voice && !recordingId) {
+          this.callError.set('No hay espacio en este dispositivo para guardar el audio. Libera memoria y vuelve a grabar.');
+          this.clippyStep.set('offer');
+          this.clippyMood.set('ask');
+          return;
         }
       }
       if (voice) {
-        await this.saveVoiceNote(this.callRecordingId, result.transcript, result.durationSeconds);
+        if (!this.callRecordingId) {
+          this.callError.set('No se pudo guardar el audio. Vuelve a grabar la nota de voz.');
+          this.clippyStep.set('offer');
+          this.clippyMood.set('ask');
+          return;
+        }
+        await this.saveVoiceNote(this.callRecordingId, result.transcript, result.durationSeconds, voiceNoteId || undefined);
         return;
       }
     } catch (error) {
@@ -2874,13 +2969,21 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.clippyMood.set('ask');
   }
 
-  private async saveVoiceNote(recordingId: string | null, transcript: string, durationSeconds: number): Promise<void> {
+  private async saveVoiceNote(
+    recordingId: string | null,
+    transcript: string,
+    durationSeconds: number,
+    noteId?: string,
+  ): Promise<void> {
     const createdAt = this.timestampForSelectedDay();
     const spoken = transcript.trim();
     const clock = this.formatVoiceTime(durationSeconds);
-    const body = spoken || `Nota de voz de ${clock}. Pulsa reproducir para escucharla.`;
+    const body =
+      (spoken || `Nota de voz de ${clock}. Pulsa reproducir para escucharla.`) +
+      `\n${VOICE_MARK}${Math.max(0, Math.round(durationSeconds))}-->`;
     const pos = this.nextFreeNotePos();
     this.insertLocalNote({
+      id: noteId,
       title: 'Nota de voz',
       body,
       color: 'sky',
@@ -2902,20 +3005,88 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     }, 4200);
   }
 
+  isOrphanVoice(note: Note): boolean {
+    return !note.recording_id && /Nota de voz de \d+:\d+/i.test(note.body || '');
+  }
+
+  isPendingVoice(note: Note): boolean {
+    return isLocalRecordingId(note.recording_id);
+  }
+
+  private async saveOrQueueAudio(
+    file: File,
+    title: string,
+    durationSeconds: number,
+    noteId: string,
+  ): Promise<string | null> {
+    if (this.sync.online()) {
+      try {
+        const recording = await this.uploadVoiceAudio(file, title, durationSeconds);
+        return recording.id;
+      } catch (error) {
+        console.error('No se pudo subir el audio; se guarda en este dispositivo', error);
+      }
+    }
+    try {
+      const clipId = await this.pendingAudio.enqueue({
+        noteId,
+        title,
+        durationSeconds,
+        file,
+        filename: file.name,
+      });
+      void this.pendingAudio.flush();
+      return localRecordingId(clipId);
+    } catch (error) {
+      console.error('No se pudo guardar el audio en este dispositivo', error);
+      return null;
+    }
+  }
+
+  private attachUploadedAudio(done: { noteId: string; recordingId: string; transcribe: boolean }): void {
+    const note = this.notes().find((item) => item.id === done.noteId);
+    if (!note) return;
+    note.recording_id = done.recordingId;
+    this.patchNote(note.id, { recording_id: done.recordingId });
+    if (this.voiceNoteId() === note.id) this.stopVoice();
+    if (done.transcribe) this.extractVoiceText(note);
+  }
+
+  private async uploadVoiceAudio(file: File, title: string, durationSeconds: number) {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await firstValueFrom(this.recordingsApi.upload(file, title, durationSeconds));
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await new Promise((resolve) => window.setTimeout(resolve, attempt * 800));
+      }
+    }
+    throw lastError;
+  }
+
   isVoicePlaying(note: Note): boolean {
     return this.voicePlaying() && this.voiceNoteId() === note.id;
   }
 
-  voiceProgress(note: Note): number {
-    if (this.voiceNoteId() !== note.id) return 0;
-    const duration = this.voiceDuration();
-    if (!duration) return 0;
-    return Math.min(100, (this.voiceCurrent() / duration) * 100);
+  voicePosition(note: Note): number {
+    return this.voiceNoteId() === note.id ? this.voiceCurrent() : 0;
+  }
+
+  voiceMax(note: Note): number {
+    if (this.voiceNoteId() === note.id && this.voiceDuration() > 0) return this.voiceDuration();
+    return this.guessVoiceDuration(note);
+  }
+
+  voiceFillPct(note: Note): number {
+    const max = this.voiceMax(note);
+    if (!max) return 0;
+    return Math.min(100, (this.voicePosition(note) / max) * 100);
   }
 
   voiceClock(note: Note): string {
     const current = this.voiceNoteId() === note.id ? this.voiceCurrent() : 0;
-    const duration = this.voiceNoteId() === note.id ? this.voiceDuration() : 0;
+    const duration = this.voiceMax(note);
     if (!duration) return this.formatVoiceTime(current);
     return `${this.formatVoiceTime(current)} / ${this.formatVoiceTime(duration)}`;
   }
@@ -2932,30 +3103,160 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     if (this.voiceAudio && this.voiceNoteId() === note.id) this.voiceAudio.playbackRate = next;
   }
 
-  toggleVoice(note: Note): void {
+  beginVoiceScrub(note: Note, event?: PointerEvent): void {
+    this.voiceScrubbing.set(true);
+    const target = event?.currentTarget as HTMLElement | undefined;
+    if (event && target?.setPointerCapture) {
+      try {
+        target.setPointerCapture(event.pointerId);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.voiceNoteId() !== note.id || !this.voiceAudio) {
+      void this.loadVoice(note, { autoplay: false });
+    }
+  }
+
+  endVoiceScrub(): void {
+    this.voiceScrubbing.set(false);
+  }
+
+  onVoiceSeek(note: Note, event: Event): void {
+    const seconds = Number((event.target as HTMLInputElement).value);
+    if (!Number.isFinite(seconds)) return;
+    this.voiceScrubbing.set(true);
+    this.voiceCurrent.set(seconds);
+    void this.seekVoiceTo(note, seconds);
+  }
+
+  async toggleVoice(note: Note): Promise<void> {
     if (!note.recording_id) return;
     if (this.voiceNoteId() === note.id && this.voiceAudio) {
       if (this.voicePlaying()) {
         this.voiceAudio.pause();
         this.voicePlaying.set(false);
       } else {
-        void this.voiceAudio.play();
-        this.voicePlaying.set(true);
+        void this.playVoiceAudio();
       }
       return;
     }
-    this.stopVoice();
-    const audio = new Audio(this.recordingsApi.audioUrl(note.recording_id));
+    this.voicePendingSeek = null;
+    this.voicePlaying.set(true);
+    await this.loadVoice(note, { autoplay: true });
+  }
+
+  private async seekVoiceTo(note: Note, seconds: number): Promise<void> {
+    if (!note.recording_id) return;
+    this.voicePendingSeek = seconds;
+    if (this.voiceNoteId() !== note.id || !this.voiceAudio) {
+      this.voicePlaying.set(true);
+      await this.loadVoice(note, { autoplay: true });
+      return;
+    }
+    this.applyVoiceSeek(this.voiceAudio, seconds);
+    void this.playVoiceAudio();
+  }
+
+  private applyVoiceSeek(audio: HTMLAudioElement, seconds: number): void {
+    const duration = this.usableVoiceDuration(audio);
+    const time = duration ? Math.min(Math.max(0, seconds), duration) : Math.max(0, seconds);
+    this.voiceCurrent.set(time);
+    try {
+      audio.currentTime = time;
+    } catch {
+      this.voicePendingSeek = time;
+      return;
+    }
+    if (Number.isFinite(audio.duration) && audio.duration > 0) this.voicePendingSeek = null;
+    else this.voicePendingSeek = time;
+  }
+
+  private usableVoiceDuration(audio: HTMLAudioElement): number {
+    if (Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+    return this.voiceDuration();
+  }
+
+  private guessVoiceDuration(note: Note): number {
+    const marked = Number(this.rawPayload(note.body, VOICE_MARK));
+    if (Number.isFinite(marked) && marked > 0) return marked;
+    const match = (note.body || '').match(/Nota de voz de (\d+):(\d{2})/i);
+    if (!match) return 0;
+    return Number(match[1]) * 60 + Number(match[2]);
+  }
+
+  private rememberVoiceDuration(note: Note, seconds: number): void {
+    if (!this.canEdit(note) || seconds <= 0) return;
+    const marked = Number(this.rawPayload(note.body, VOICE_MARK));
+    if (Number.isFinite(marked) && marked > 0) return;
+    const stamp = `\n${VOICE_MARK}${Math.round(seconds)}-->`;
+    note.body = `${note.body || ''}${stamp}`;
+    this.patchNote(note.id, { body: note.body });
+  }
+
+  private playVoiceAudio(): Promise<void> {
+    if (!this.voiceAudio) return Promise.resolve();
+    const audio = this.voiceAudio;
+    this.voicePlaying.set(true);
+    return audio.play().then(
+      () => {
+        if (this.voiceAudio === audio) this.voicePlaying.set(true);
+      },
+      () => {
+        if (this.voiceAudio !== audio) return;
+        this.error.set('No se pudo reproducir la nota de voz.');
+        this.stopVoice();
+      },
+    );
+  }
+
+  private async loadVoice(note: Note, options: { autoplay: boolean }): Promise<void> {
+    if (!note.recording_id) return;
+    if (this.voiceNoteId() === note.id && this.voiceAudio) {
+      if (this.voicePendingSeek != null) this.applyVoiceSeek(this.voiceAudio, this.voicePendingSeek);
+      if (options.autoplay) void this.playVoiceAudio();
+      return;
+    }
+    this.stopVoice(true);
+    const token = this.voiceLoadToken;
+    let src = this.recordingsApi.audioUrl(note.recording_id);
+    if (isLocalRecordingId(note.recording_id)) {
+      const local = await this.pendingAudio.objectUrl(note.recording_id);
+      if (token !== this.voiceLoadToken) {
+        if (local) URL.revokeObjectURL(local);
+        return;
+      }
+      if (!local) {
+        this.voicePlaying.set(false);
+        this.error.set('El audio sigue en este dispositivo, pero no se pudo abrir. Recarga e inténtalo de nuevo.');
+        return;
+      }
+      this.voiceObjectUrl = local;
+      src = local;
+    }
+    if (token !== this.voiceLoadToken) return;
+    const audio = new Audio();
+    audio.preload = 'auto';
     audio.playbackRate = this.voiceRate();
     this.voiceAudio = audio;
     this.voiceNoteId.set(note.id);
-    this.voiceCurrent.set(0);
-    this.voiceDuration.set(0);
-    audio.addEventListener('loadedmetadata', () => {
-      if (this.voiceAudio === audio) this.voiceDuration.set(Number.isFinite(audio.duration) ? audio.duration : 0);
-    });
+    this.voiceCurrent.set(this.voicePendingSeek ?? 0);
+    this.voiceDuration.set(this.guessVoiceDuration(note));
+    const commitDuration = () => {
+      if (this.voiceAudio !== audio) return;
+      if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+      this.voiceDuration.set(audio.duration);
+      this.rememberVoiceDuration(note, audio.duration);
+      if (this.voicePendingSeek != null) this.applyVoiceSeek(audio, this.voicePendingSeek);
+    };
+    audio.addEventListener('loadedmetadata', commitDuration);
+    audio.addEventListener('durationchange', commitDuration);
     audio.addEventListener('timeupdate', () => {
-      if (this.voiceAudio === audio) this.voiceCurrent.set(audio.currentTime || 0);
+      if (this.voiceAudio !== audio || this.voiceScrubbing()) return;
+      this.voiceCurrent.set(audio.currentTime || 0);
+    });
+    audio.addEventListener('playing', () => {
+      if (this.voiceAudio === audio) this.voicePlaying.set(true);
     });
     audio.addEventListener('ended', () => {
       if (this.voiceAudio !== audio) return;
@@ -2967,28 +3268,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       this.stopVoice();
       this.error.set('No se pudo reproducir la nota de voz.');
     });
-    void audio.play().then(
-      () => this.voicePlaying.set(true),
-      () => {
-        this.error.set('No se pudo reproducir la nota de voz.');
-        this.stopVoice();
-      },
-    );
-  }
-
-  seekVoice(event: MouseEvent, note: Note): void {
-    if (!note.recording_id) return;
-    if (this.voiceNoteId() !== note.id || !this.voiceAudio) {
-      this.toggleVoice(note);
-      return;
-    }
-    const target = event.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const ratio = rect.width ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0;
-    const duration = this.voiceAudio.duration || this.voiceDuration();
-    if (!duration || !Number.isFinite(duration)) return;
-    this.voiceAudio.currentTime = ratio * duration;
-    this.voiceCurrent.set(this.voiceAudio.currentTime);
+    audio.src = src;
+    if (this.voicePendingSeek) this.applyVoiceSeek(audio, this.voicePendingSeek);
+    if (options.autoplay) void this.playVoiceAudio();
   }
 
   isVoiceTranscribing(note: Note): boolean {
@@ -2997,6 +3279,12 @@ export class BoardPage implements AfterViewInit, OnDestroy {
 
   extractVoiceText(note: Note): void {
     if (!note.recording_id || !this.canEdit(note) || this.voiceTranscribingId()) return;
+    if (isLocalRecordingId(note.recording_id)) {
+      void this.pendingAudio.markTranscribe(note.recording_id);
+      void this.pendingAudio.flush();
+      this.error.set('');
+      return;
+    }
     this.voiceTranscribingId.set(note.id);
     this.error.set('');
     const recordingId = note.recording_id;
@@ -3043,13 +3331,20 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
   }
 
-  private stopVoice(): void {
+  private stopVoice(keepSeek = false): void {
+    this.voiceLoadToken += 1;
     if (this.voiceAudio) {
       this.voiceAudio.pause();
       this.voiceAudio.removeAttribute('src');
       this.voiceAudio.load();
       this.voiceAudio = null;
     }
+    if (this.voiceObjectUrl) {
+      URL.revokeObjectURL(this.voiceObjectUrl);
+      this.voiceObjectUrl = null;
+    }
+    this.voiceScrubbing.set(false);
+    if (!keepSeek) this.voicePendingSeek = null;
     this.voicePlaying.set(false);
     this.voiceNoteId.set(null);
     this.voiceCurrent.set(0);
@@ -3318,6 +3613,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   setTitle(note: Note, title: string): void {
+    this.captureNoteUndo(note, 'type');
     note.title = title;
     this.beginEdit(note);
   }
@@ -3365,20 +3661,20 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.toggleNoteFlyout(note, 'date', expanded);
   }
 
-  private toggleNoteFlyout(note: Note, kind: 'color' | 'remind' | 'date' | 'share' | 'rich', expanded: boolean): void {
-    const current = this.noteFlyout();
-    if (current?.kind === kind && current.noteId === note.id) {
-      this.closeNoteFlyout();
-      return;
-    }
-    if (current?.kind === 'rich') {
-      const previous = this.notes().find((item) => item.id === current.noteId);
-      if (previous) this.flushRichBody(previous);
-    }
-    if (kind === 'remind') this.initRemindDraft(note);
-    if (kind === 'date') this.initDateDraft();
-    const width = kind === 'remind' ? 268 : kind === 'date' ? 196 : kind === 'share' ? 236 : kind === 'rich' ? 228 : 156;
-    const height = kind === 'remind' ? 348 : kind === 'date' ? 228 : kind === 'share' ? 220 : kind === 'rich' ? 168 : 196;
+  private flyoutSize(kind: 'color' | 'remind' | 'date' | 'share' | 'rich'): { width: number; height: number } {
+    if (kind === 'remind') return { width: 268, height: 348 };
+    if (kind === 'date') return { width: 196, height: 228 };
+    if (kind === 'share') return { width: 236, height: 220 };
+    if (kind === 'rich') return { width: 228, height: 214 };
+    return { width: 156, height: 196 };
+  }
+
+  private flyoutPos(
+    note: Note,
+    kind: 'color' | 'remind' | 'date' | 'share' | 'rich',
+    expanded: boolean,
+  ): { x: number; y: number; side: 'left' | 'right' } {
+    const { width, height } = this.flyoutSize(kind);
     const rect =
       (expanded
         ? document.querySelector('.note-expanded')?.getBoundingClientRect()
@@ -3390,7 +3686,32 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     let y = rect.top;
     x = Math.min(Math.max(8, x), window.innerWidth - width - 8);
     y = Math.min(Math.max(8, y), window.innerHeight - height - 8);
-    this.noteFlyout.set({ kind, noteId: note.id, x, y, side, expanded });
+    return { x, y, side };
+  }
+
+  private showNoteFlyout(
+    note: Note,
+    kind: 'color' | 'remind' | 'date' | 'share' | 'rich',
+    expanded: boolean,
+  ): void {
+    const current = this.noteFlyout();
+    if (current?.kind === 'rich' && (kind !== 'rich' || current.noteId !== note.id)) {
+      const previous = this.notes().find((item) => item.id === current.noteId);
+      if (previous) this.flushRichBody(previous);
+    }
+    if (kind === 'remind') this.initRemindDraft(note);
+    if (kind === 'date') this.initDateDraft();
+    const pos = this.flyoutPos(note, kind, expanded);
+    this.noteFlyout.set({ kind, noteId: note.id, x: pos.x, y: pos.y, side: pos.side, expanded });
+  }
+
+  private toggleNoteFlyout(note: Note, kind: 'color' | 'remind' | 'date' | 'share' | 'rich', expanded: boolean): void {
+    const current = this.noteFlyout();
+    if (current?.kind === kind && current.noteId === note.id) {
+      this.closeNoteFlyout();
+      return;
+    }
+    this.showNoteFlyout(note, kind, expanded);
   }
 
   closeNoteFlyout(): void {
@@ -3906,7 +4227,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
 
   textOf(note: Note): string {
     const body = note.body ?? '';
-    const cuts = [body.indexOf(IMAGE_MARK), body.indexOf(MARK_MARK)].filter((index) => index >= 0);
+    const cuts = [body.indexOf(IMAGE_MARK), body.indexOf(MARK_MARK), body.indexOf(VOICE_MARK)].filter((index) => index >= 0);
     const index = cuts.length ? Math.min(...cuts) : -1;
     return (index === -1 ? body : body.slice(0, index)).replace(/\s+$/, '');
   }
@@ -3924,8 +4245,13 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     return panel?.kind === 'rich' && panel.noteId === note.id;
   }
 
-  safeRich(note: Note): SafeHtml {
-    return this.sanitizer.bypassSecurityTrustHtml(sanitizeRich(this.textOf(note)));
+  usesRichBody(note: Note): boolean {
+    return this.isRich(note) || this.isRichEditing(note);
+  }
+
+  richHtml(note: Note): string {
+    const text = this.textOf(note);
+    return isRichHtml(text) ? sanitizeRich(text) : this.plainToHtml(text);
   }
 
   beginEdit(note: Note): void {
@@ -3986,10 +4312,65 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       this.closeNoteFlyout();
       return;
     }
+    this.openRichTools(note, expanded);
+  }
+
+  onNoteTextSelect(note: Note): void {
+    this.openRichFromSelection(note);
+  }
+
+  private openRichTools(note: Note, expanded = false): void {
+    if (!this.canEdit(note) || note.archived || note.pinned) return;
     this.captureNoteSelection(note);
     this.beginEdit(note);
-    this.toggleNoteFlyout(note, 'rich', expanded);
+    this.showNoteFlyout(note, 'rich', expanded);
     this.seedRichBody(note);
+  }
+
+  private openRichFromSelection(note: Note): void {
+    if (!this.canEdit(note) || note.archived || note.pinned) return;
+    if (!this.noteHasTextSelection(note)) return;
+    if (this.isRichEditing(note)) {
+      this.captureNoteSelection(note);
+      return;
+    }
+    this.openRichTools(note, this.expandedId() === note.id);
+  }
+
+  private noteIdFromEditor(el: HTMLElement | null): string | null {
+    const id = el?.id || '';
+    const match = id.match(/^note-(?:body|rich)(?:-exp)?-(.+)$/);
+    return match?.[1] ?? null;
+  }
+
+  private noteHasTextSelection(note: Note): boolean {
+    const expanded = this.expandedId() === note.id;
+    const textarea = document.getElementById(
+      expanded ? `note-body-exp-${note.id}` : `note-body-${note.id}`,
+    ) as HTMLTextAreaElement | null;
+    if (textarea && textarea.selectionStart !== textarea.selectionEnd) return true;
+    const host = this.richBodyEl(note);
+    const sel = window.getSelection();
+    if (!host || !sel || !sel.rangeCount || sel.isCollapsed) return false;
+    const range = sel.getRangeAt(0);
+    return host.contains(range.commonAncestorContainer) || range.commonAncestorContainer === host;
+  }
+
+  private maybeOpenRichFromPointer(event?: PointerEvent): void {
+    if (!event || event.type === 'pointercancel') {
+      this.selectingNoteId = null;
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('.note-flyout, .rich-toolbar, .note-icon-btn, .note-drag-bar, .draw-palette, .note-image-item')) {
+      this.selectingNoteId = null;
+      return;
+    }
+    const id = this.selectingNoteId;
+    this.selectingNoteId = null;
+    if (!id) return;
+    const note = this.notes().find((item) => item.id === id);
+    if (note) this.openRichFromSelection(note);
   }
 
   private richBodyEl(note: Note): HTMLElement | null {
@@ -4001,8 +4382,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     window.setTimeout(() => {
       const editor = this.richBodyEl(note);
       if (!editor) return;
-      const text = this.textOf(note);
-      editor.innerHTML = isRichHtml(text) ? sanitizeRich(text) : this.plainToHtml(text);
+      if (!editor.innerHTML) editor.innerHTML = this.richHtml(note);
       editor.focus();
       this.restoreRichSelection(editor);
       requestAnimationFrame(() => this.restoreRichSelection(editor));
@@ -4027,10 +4407,14 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     if (!editor) return;
     const html = sanitizeRich(editor.innerHTML).replace(/^(<br\s*\/?>|\s|&nbsp;)*$/i, '');
     const next = isRichHtml(html) ? html : stripHtml(html);
+    if (next === this.textOf(note)) return;
+    this.captureNoteUndo(note, 'format');
     this.writeBody(note, this.imagesOf(note), this.marksOf(note), next);
   }
 
   onRichInput(note: Note, event: Event): void {
+    if (!this.canEdit(note)) return;
+    this.captureNoteUndo(note, 'type');
     const html = sanitizeRich((event.target as HTMLElement).innerHTML);
     const next = isRichHtml(html) ? html : stripHtml(html);
     this.writeBody(note, this.imagesOf(note), this.marksOf(note), next);
@@ -4124,18 +4508,22 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     } else if (command === 'underline') {
       applied = wrapSelection(editor, 'u');
     } else if (command === 'strikeThrough') {
-      applied = wrapSelection(editor, 's');
+      applied = toggleStrike(editor);
     } else if (command === 'insertUnorderedList') {
-      applied = applyList(editor, false);
+      applied = applyList(editor, 'bullet');
     } else if (command === 'insertOrderedList') {
-      applied = applyList(editor, true);
+      applied = applyList(editor, 'number');
+    } else if (command === 'insertChecklist') {
+      applied = applyList(editor, 'check');
     } else if (command === 'fontSize' && value) {
       const sizes: Record<string, string> = { '2': '12px', '3': '16px', '5': '22px', '7': '28px' };
       applied = wrapSelection(editor, 'span', { 'font-size': sizes[value] || '16px' });
     } else if (command === 'fontName' && value) {
       applied = wrapSelection(editor, 'span', { 'font-family': value });
+    } else if (command === 'secret') {
+      applied = toggleSecret(editor);
     }
-    if (!applied) {
+    if (!applied && command !== 'secret' && command !== 'underline' && command !== 'strikeThrough' && command !== 'insertChecklist') {
       try {
         document.execCommand(command, false, value);
       } catch {
@@ -4150,6 +4538,10 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.richCommand('fontName', value);
   }
 
+  richToggleSecret(): void {
+    this.richCommand('secret');
+  }
+
   richHighlight(color: string): void {
     const note = this.flyoutNote();
     const editor = note ? this.richBodyEl(note) : null;
@@ -4160,6 +4552,21 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     } else {
       wrapSelection(editor, 'mark', { 'background-color': color });
     }
+    this.flushRichBody(note);
+  }
+
+  onRichCheckClick(event: MouseEvent | PointerEvent, note: Note): void {
+    if (!this.canEdit(note)) return;
+    const target = event.target as HTMLElement | null;
+    const item = target?.closest('li');
+    const list = item?.closest('ul.note-check');
+    const editor = this.richBodyEl(note);
+    if (!item || !list || !editor?.contains(list)) return;
+    const rect = item.getBoundingClientRect();
+    if (event.clientX - rect.left > 22) return;
+    event.preventDefault();
+    event.stopPropagation();
+    item.classList.toggle('is-checked');
     this.flushRichBody(note);
   }
 
@@ -4417,6 +4824,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   }
 
   setText(note: Note, text: string): void {
+    this.captureNoteUndo(note, 'type');
     this.writeBody(note, this.imagesOf(note), this.marksOf(note), text);
     this.beginEdit(note);
   }
@@ -4579,6 +4987,20 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.dropTargetId.set(null);
   }
 
+  @HostListener('document:keydown', ['$event'])
+  onDocumentKey(event: KeyboardEvent): void {
+    const key = event.key.toLowerCase();
+    if (!(event.metaKey || event.ctrlKey) || (key !== 'z' && key !== 'y')) return;
+    const note = this.undoTarget(event);
+    if (!note || !this.canEdit(note)) return;
+    const redo = key === 'y' || event.shiftKey;
+    const stack = redo ? this.noteRedos.get(note.id) : this.noteUndos.get(note.id);
+    if (!stack?.length) return;
+    event.preventDefault();
+    if (redo) this.redoNote(note);
+    else this.undoNote(note);
+  }
+
   @HostListener('document:keydown.escape')
   onEscape(): void {
     if (this.noteFlyout()) {
@@ -4586,6 +5008,108 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       return;
     }
     if (this.expandedId()) this.closeExpanded();
+  }
+
+  private isForeignUndoField(target: HTMLElement | null): boolean {
+    if (!target) return false;
+    if (target.closest('.board-search-wrap, .note-draw-text')) return true;
+    if (target.closest('.note-flyout') && !target.closest('.rich-toolbar')) {
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return true;
+    }
+    return false;
+  }
+
+  private undoTarget(event: KeyboardEvent): Note | null {
+    const target = event.target as HTMLElement | null;
+    if (this.isForeignUndoField(target)) return null;
+    if (this.expandedNote() && target?.closest('.note-expanded, .note-flyout, .draw-palette')) {
+      return this.expandedNote();
+    }
+    const card = target?.closest('[id^="note-card-"]');
+    if (card) {
+      const id = card.id.slice('note-card-'.length);
+      return this.notes().find((item) => item.id === id) ?? null;
+    }
+    if (target?.closest('.note-flyout.is-rich, .rich-toolbar')) {
+      const panel = this.noteFlyout();
+      if (panel?.noteId) return this.notes().find((item) => item.id === panel.noteId) ?? null;
+    }
+    const editing = this.editingId();
+    if (editing) return this.notes().find((item) => item.id === editing) ?? null;
+    return null;
+  }
+
+  private noteSnapshot(note: Note): { title: string; text: string } {
+    return { title: note.title ?? '', text: this.textOf(note) };
+  }
+
+  private closeUndoBurst(): void {
+    this.undoBurstId = null;
+    if (this.undoTimer) {
+      clearTimeout(this.undoTimer);
+      this.undoTimer = null;
+    }
+  }
+
+  private captureNoteUndo(note: Note, mode: 'type' | 'format'): void {
+    if (this.undoApplying) return;
+    if (mode === 'type' && this.undoBurstId === note.id) return;
+    this.closeUndoBurst();
+    const snap = this.noteSnapshot(note);
+    const stack = this.noteUndos.get(note.id) ?? [];
+    const last = stack[stack.length - 1];
+    if (!last || last.title !== snap.title || last.text !== snap.text) {
+      stack.push(snap);
+      if (stack.length > 80) stack.shift();
+      this.noteUndos.set(note.id, stack);
+    }
+    this.noteRedos.set(note.id, []);
+    if (mode === 'type') {
+      this.undoBurstId = note.id;
+      this.undoTimer = setTimeout(() => this.closeUndoBurst(), 500);
+    }
+  }
+
+  private undoNote(note: Note): void {
+    this.closeUndoBurst();
+    const stack = this.noteUndos.get(note.id);
+    if (!stack?.length) return;
+    const prev = stack.pop()!;
+    const redo = this.noteRedos.get(note.id) ?? [];
+    redo.push(this.noteSnapshot(note));
+    this.noteRedos.set(note.id, redo);
+    this.applyNoteSnapshot(note, prev);
+  }
+
+  private redoNote(note: Note): void {
+    this.closeUndoBurst();
+    const stack = this.noteRedos.get(note.id);
+    if (!stack?.length) return;
+    const next = stack.pop()!;
+    const undo = this.noteUndos.get(note.id) ?? [];
+    undo.push(this.noteSnapshot(note));
+    this.noteUndos.set(note.id, undo);
+    this.applyNoteSnapshot(note, next);
+  }
+
+  private applyNoteSnapshot(note: Note, snap: { title: string; text: string }): void {
+    this.undoApplying = true;
+    note.title = snap.title;
+    this.writeBody(note, this.imagesOf(note), this.marksOf(note), snap.text);
+    this.notes.update((items) => [...items]);
+    const paint = () => {
+      const editor = this.richBodyEl(note);
+      if (!editor) return;
+      const html = this.richHtml(note);
+      editor.innerHTML = html;
+      editor.dataset['richSrc'] = html;
+    };
+    paint();
+    queueMicrotask(paint);
+    requestAnimationFrame(paint);
+    this.undoApplying = false;
+    this.beginEdit(note);
   }
 
   highlightedParts(text: string): Array<{ text: string; hit: boolean }> {
@@ -4660,6 +5184,14 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     return BoardPage.localDayKey(date);
   }
 
+  noteCreatedClock(note: Note): string {
+    const date = new Date(note.created_at);
+    if (Number.isNaN(date.getTime())) return '';
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  }
+
   private timestampForDay(key: string): string {
     const date = BoardPage.parseDayKey(key);
     date.setHours(12, 0, 0, 0);
@@ -4687,9 +5219,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     this.arrangeByPriority(note.id);
   }
 
-  @HostListener('document:pointerup')
-  @HostListener('document:pointercancel')
-  onUp(): void {
+  @HostListener('document:pointerup', ['$event'])
+  @HostListener('document:pointercancel', ['$event'])
+  onUp(event?: PointerEvent): void {
     if (this.clockDrag()) {
       this.clockDrag.set(null);
       return;
@@ -4793,7 +5325,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
       this.save(note);
       this.moving = null;
       this.draggingNoteId.set(null);
+      return;
     }
+    this.maybeOpenRichFromPointer(event);
   }
 
   setPriority(note: Note, priority: number): void {
@@ -5023,10 +5557,11 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     }
   }
 
-  private encodeBody(text: string, images: NoteImage[], marks: NoteMark[] = []): string {
+  private encodeBody(text: string, images: NoteImage[], marks: NoteMark[] = [], voiceSeconds = 0): string {
     let body = text;
     if (images.length) body += `\n${IMAGE_MARK}${JSON.stringify(images)}-->`;
     if (marks.length) body += `\n${MARK_MARK}${JSON.stringify(marks)}-->`;
+    if (voiceSeconds > 0) body += `\n${VOICE_MARK}${Math.round(voiceSeconds)}-->`;
     return body;
   }
 
@@ -5034,8 +5569,9 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     const nextText = text ?? this.textOf(note);
     const nextMarks = marks ?? this.marksOf(note);
     const nextImages = images ?? this.imagesOf(note);
+    const voiceSeconds = this.guessVoiceDuration(note);
     if (nextImages.length) {
-      note.body = this.encodeBody(nextText, nextImages, nextMarks);
+      note.body = this.encodeBody(nextText, nextImages, nextMarks, voiceSeconds);
       return;
     }
     const deleting = images !== undefined && images.length === 0 && this.imagesOf(note).length > 0;
@@ -5043,10 +5579,11 @@ export class BoardPage implements AfterViewInit, OnDestroy {
     if (!deleting && rawImages && this.imagesOf(note).length === 0) {
       note.body =
         `${nextText}\n${IMAGE_MARK}${rawImages}-->` +
-        (nextMarks.length ? `\n${MARK_MARK}${JSON.stringify(nextMarks)}-->` : '');
+        (nextMarks.length ? `\n${MARK_MARK}${JSON.stringify(nextMarks)}-->` : '') +
+        (voiceSeconds > 0 ? `\n${VOICE_MARK}${Math.round(voiceSeconds)}-->` : '');
       return;
     }
-    note.body = this.encodeBody(nextText, nextImages, nextMarks);
+    note.body = this.encodeBody(nextText, nextImages, nextMarks, voiceSeconds);
   }
 
   private clipboardImages(event: ClipboardEvent): File[] {
@@ -5386,7 +5923,7 @@ export class BoardPage implements AfterViewInit, OnDestroy {
   private insertLocalNote(fields: Partial<Note>): Note {
     const createdAt = fields.created_at || this.timestampForSelectedDay();
     const note = this.normalize({
-      id: this.newNoteId(),
+      id: fields.id || this.newNoteId(),
       title: fields.title ?? '',
       body: fields.body ?? '',
       color: fields.color ?? 'yellow',

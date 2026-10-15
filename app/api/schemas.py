@@ -110,6 +110,13 @@ class ActionItemPatch(BaseModel):
     task: str | None = None
 
 
+class AnalysisActionOut(BaseModel):
+    task: str
+    owner: str | None = None
+    due_date: str | None = None
+    priority: ActionItemPriority = ActionItemPriority.MEDIUM
+
+
 class AnalysisOut(BaseModel):
     id: str
     recording_id: str
@@ -121,6 +128,7 @@ class AnalysisOut(BaseModel):
     participants: list[str]
     key_topics: list[str]
     decisions: list[str]
+    action_items: list[AnalysisActionOut] = Field(default_factory=list)
 
 
 class TranscribeRequest(BaseModel):

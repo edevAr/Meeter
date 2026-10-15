@@ -51,6 +51,9 @@ class LocalCallSummarizer(AIProvider):
                 participants=[],
             )
         sentences = [part.strip(" •-\t") for part in _SENTENCE_RE.split(text) if part.strip()]
+        if "\n" in text:
+            sentences = [part.strip(" •-\t") for part in text.splitlines() if part.strip()] or sentences
+        speakers = sorted({part.split()[0] for part in text.splitlines() if part.strip().startswith("SPEAKER_")})
         if not sentences:
             sentences = [text]
         ranked = _rank_sentences(sentences)
@@ -65,7 +68,7 @@ class LocalCallSummarizer(AIProvider):
             action_items=[
                 LLMActionItem(task=item, priority=ActionItemPriority.MEDIUM) for item in actions
             ],
-            participants=[],
+            participants=speakers,
         )
 
 

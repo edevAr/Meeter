@@ -10,7 +10,7 @@ from app.domain.models.enums import AudioSourceType, RecordingStatus
 from app.infrastructure.ai.llm_provider import AIProviderError
 from app.infrastructure.audio.recorder import RecordingResult
 from app.infrastructure.audio.wav_writer import write_silence_wav
-from tests.conftest import FakeAIProvider, FakeDiarization, FakeTranscriptionProvider
+from tests.conftest import FakeAIProvider, FakeDiarization, FakeTranscriptionProvider, SpeakerFakeDiarization
 
 
 @pytest.mark.asyncio
@@ -52,3 +52,25 @@ async def test_analyze_persists_summary(uow_factory, settings: Settings) -> None
     assert updated is not None
     assert updated.status == RecordingStatus.ANALYZED
     assert ai.calls
+
+
+@pytest.mark.asyncio
+async def test_analyze_sends_speaker_transcript(uow_factory, settings: Settings) -> None:
+    recordings = RecordingService(uow_factory, settings)
+    wav = settings.recordings_path / "z.wav"
+    write_silence_wav(wav, 0.2)
+    recording = recordings.create_from_capture(
+        RecordingResult(path=wav, duration_seconds=0.2, bytes_written=wav.stat().st_size),
+        "Call",
+        AudioSourceType.MICROPHONE,
+    )
+    transcriptions = TranscriptionService(
+        uow_factory, FakeTranscriptionProvider(), SpeakerFakeDiarization(), settings.max_recording_bytes
+    )
+    await transcriptions.transcribe(recording.id)
+    ai = FakeAIProvider()
+    service = AIAnalysisService(uow_factory, ai)
+    analysis = await service.analyze(recording.id)
+    assert ai.calls
+    assert "SPEAKER_01" in ai.calls[0]
+    assert analysis.participants

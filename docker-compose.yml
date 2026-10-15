@@ -16,9 +16,15 @@ services:
       EXPORTS_PATH: "./data/exports"
       TRANSCRIPTION_PROVIDER: "faster-whisper"
       WHISPER_MODEL: "${WHISPER_MODEL:-tiny}"
+      DIARIZATION_PROVIDER: "${DIARIZATION_PROVIDER:-clustering}"
+      AI_PROVIDER: "${AI_PROVIDER:-qwen3}"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
+      PYTHONPATH: "/app"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
+      - ./app:/app/app
       - ./data:/app/data
       - whisper-models:/root/.cache
     restart: unless-stopped
